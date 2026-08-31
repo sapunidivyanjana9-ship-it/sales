@@ -1249,7 +1249,11 @@
         ];
 
         // ===================== SUPPLIER SAMPLE FLOW DATA =====================
-        let sampleRequests = [
+        // Persisted under 'sampleRequests' - the same key the Supplier
+        // Dashboard reads from, so a request raised here actually reaches the
+        // supplier it was raised for instead of only living in this tab's
+        // memory until the next reload.
+        let sampleRequests = JSON.parse(localStorage.getItem('sampleRequests') || 'null') || [
             { id: 'SAMP-001', supplier: 'Lanka Spices', material: 'Black Pepper', qty: 2, requestDate: '2026-03-10',
                 status: 'Pending', sampleSent: false },
             { id: 'SAMP-002', supplier: 'Jaffna Exports', material: 'Cardamom', qty: 1, requestDate: '2026-03-12',
@@ -1808,18 +1812,12 @@
                 supplierUsername: supplierObj.username || 'N/A'
             });
 
-            // Save to localStorage for supplier
-            let pendingSamples = JSON.parse(localStorage.getItem('pendingSamples') || '[]');
-            pendingSamples.push({
-                sampleId: id,
-                supplier: supplier,
-                material: material,
-                qty: parseInt(qty) || 2,
-                requestDate: today,
-                status: 'Pending',
-                supplierUsername: supplierObj.username || 'N/A'
-            });
-            localStorage.setItem('pendingSamples', JSON.stringify(pendingSamples));
+            // Persist under the key/shape the Supplier Dashboard reads
+            // (localStorage.getItem('sampleRequests'), field `id`) so the
+            // request the clerk just raised is actually visible to the
+            // supplier when they log in, instead of sitting in a
+            // 'pendingSamples' key nothing ever reads back.
+            localStorage.setItem('sampleRequests', JSON.stringify(sampleRequests));
 
             showToast(`✅ Sample requested from ${supplier} for ${material}`, 'success');
             loadSampleFlowData();

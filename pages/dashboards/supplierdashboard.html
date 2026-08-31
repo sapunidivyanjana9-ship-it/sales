@@ -618,10 +618,23 @@
     </div>
 
     <script>
-        // Current Supplier
+        // Current Supplier - identified from the session created at login.
+        // This used to be hardcoded to a demo account ("Lanka Spices"), so
+        // every supplier who logged in - including one just registered,
+        // approved and given a sample request by the Stock Clerk - saw a
+        // stranger's dashboard and sample requests instead of their own.
+        // There is no local/offline fallback identity: without a real
+        // session we cannot know who is logged in, so we send them back
+        // to the login page instead of guessing.
+        let session = JSON.parse(localStorage.getItem('user_session') || 'null');
+        if (!session || session.role !== 'supplier') {
+            window.location.href = '../auth/login.html';
+            session = {};
+        }
         let currentSupplier = {
-            name: 'Lanka Spices',
-            email: 'lanka@spices.com'
+            name: session.company || session.full_name || session.username,
+            email: session.email,
+            username: session.username
         };
 
         // ============ SUPPLIER SAMPLE FLOW DATA (from localStorage) ============

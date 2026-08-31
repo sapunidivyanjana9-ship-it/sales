@@ -759,25 +759,6 @@
                 }
             }
 
-            // 4. Check sample requests (if supplier has samples but not registered properly)
-            if (!user && role === 'supplier') {
-                let sampleRequests = JSON.parse(localStorage.getItem('sampleRequests')) || [];
-                let sampleSupplier = sampleRequests.find(s => 
-                    s.supplier && s.supplier.toLowerCase() === username.toLowerCase()
-                );
-                if (sampleSupplier) {
-                    // Try to find in registered users by email
-                    let registered = registeredUsers.find(u => 
-                        u.email && u.email.toLowerCase() === sampleSupplier.supplierUsername?.toLowerCase()
-                    );
-                    if (registered && registered.password === password) {
-                        user = registered;
-                        source = 'registered_users (via sample)';
-                        console.log('✅ Found via sample request');
-                    }
-                }
-            }
-
             // If user found, proceed with login
             if (user) {
                 // Check status for supplier
