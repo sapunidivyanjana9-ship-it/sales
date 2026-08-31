@@ -613,7 +613,7 @@
                     return;
                 }
 
-                pendingRequests = (result.data.requests || []).filter(r => r.status === 'Pending');
+                pendingRequests = (result.requests || []).filter(r => r.status === 'Pending');
                 renderPendingRequests();
 
                 document.getElementById('pendingTotal').textContent = pendingRequests.length;
@@ -724,8 +724,8 @@
 
                 if (!result.success) return;
 
-                const customers = result.data.customers || [];
-                const wholesalers = result.data.wholesalers || [];
+                const customers = result.customers || [];
+                const wholesalers = result.wholesalers || [];
 
                 document.getElementById('customerCount').textContent = customers.length;
                 document.getElementById('wholesalerCount').textContent = wholesalers.length;

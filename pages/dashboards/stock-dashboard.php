@@ -1295,7 +1295,10 @@ $rawMaterialsJSON = json_encode($rawMaterials);
                         
                         // Clear local storage
                         try {
-                            localStorage.clear();
+                            // Only clear session keys - localStorage.clear() would
+                            // also destroy the shared registration registries.
+                            localStorage.removeItem('user_session');
+                            localStorage.removeItem('supplier_session');
                             sessionStorage.clear();
                         } catch(e) { /* Ignore */ }
                         

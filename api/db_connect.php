@@ -186,6 +186,28 @@ function ensure_pending_registration_table(PDO $pdo): void
     ');
 }
 
+function has_column(PDO $pdo, string $table, string $column): bool
+{
+    $stmt = $pdo->prepare('
+        SELECT COUNT(*)
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+    ');
+    $stmt->execute([$table, $column]);
+    return (int)$stmt->fetchColumn() > 0;
+}
+
+function ensure_supplier_request_columns(PDO $pdo): void
+{
+    if (!has_column($pdo, 'supplier_registration_requests', 'username')) {
+        $pdo->exec('ALTER TABLE supplier_registration_requests ADD username VARCHAR(50) NULL AFTER request_code');
+    }
+
+    if (!has_column($pdo, 'supplier_registration_requests', 'postal_code')) {
+        $pdo->exec('ALTER TABLE supplier_registration_requests ADD postal_code VARCHAR(20) NULL AFTER city');
+    }
+}
+
 function endpoint_guard(callable $callback): void
 {
     try {

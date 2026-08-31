@@ -125,9 +125,27 @@ endpoint_guard(function (): void {
         ]);
         $userId = (int)$pdo->lastInsertId();
 
-        // If you maintain a "suppliers" table, insert into it here, e.g.:
-        // $stmt = $pdo->prepare('INSERT INTO suppliers (user_id, supplier_code, company_name, contact_person, email, phone, address, city, postal_code, materials, business_type, account_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "active")');
-        // $stmt->execute([$userId, short_code('SUP'), $req['company_name'], $req['contact_person'], $req['email'], $req['phone'], $req['address'], $req['city'], $req['postal_code'], $req['materials'], $req['business_type']]);
+        // Register the approved supplier in the suppliers directory so the stock
+        // and manager dashboards can see them.
+        $stmt = $pdo->prepare('
+            INSERT INTO suppliers
+                (user_id, supplier_code, name, contact, email, phone, address, city,
+                 postal_code, materials, business_type, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "active")
+        ');
+        $stmt->execute([
+            $userId,
+            short_code('SUP'),
+            $req['company_name'],
+            $req['contact_person'],
+            $req['email'],
+            $req['phone'],
+            $req['address'],
+            $req['city'],
+            $req['postal_code'] ?? null,
+            $req['materials'],
+            $req['business_type'],
+        ]);
 
         $pdo->prepare('UPDATE supplier_registration_requests SET status = "Approved" WHERE request_id = ?')
             ->execute([$requestId]);

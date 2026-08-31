@@ -972,7 +972,12 @@
         function logoutUser() {
             if (confirm('Are you sure you want to logout?')) {
                 try {
-                    localStorage.clear();
+                    // Only clear the current session - NEVER localStorage.clear(),
+                    // which would also wipe shared registries such as
+                    // registered_users / managerSuppliers / pending_registrations
+                    // and lock every registered supplier out of their account.
+                    localStorage.removeItem('user_session');
+                    localStorage.removeItem('supplier_session');
                 } catch (e) {
                     console.error('Failed to clear session storage:', e);
                 }

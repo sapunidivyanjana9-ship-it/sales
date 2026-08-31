@@ -1271,15 +1271,17 @@
         // ===================== GET ACTIVE SUPPLIERS (Only from Manager's approved list) =====================
         function getActiveSuppliers() {
             let managersSuppliers = JSON.parse(localStorage.getItem('managerSuppliers')) || [];
-            let approvedSuppliers = managersSuppliers.filter(s => s.status === 'Active');
             
             let registeredUsers = JSON.parse(localStorage.getItem('registered_users')) || [];
             let approvedUsers = registeredUsers.filter(u => u.status === 'approved' || u.account_status === 'approved');
             
+            // Add any approved user that is not represented yet, but keep every
+            // existing record (Pending/Rejected included) - this list is shared
+            // with the manager dashboard and must not be pruned from here.
             approvedUsers.forEach(user => {
-                if (!approvedSuppliers.some(s => s.email === user.email)) {
-                    approvedSuppliers.push({
-                        id: 'SUP' + String(approvedSuppliers.length + 1).padStart(3, '0'),
+                if (!managersSuppliers.some(s => s.email === user.email)) {
+                    managersSuppliers.push({
+                        id: 'SUP' + String(managersSuppliers.length + 1).padStart(3, '0'),
                         company: user.company_name || user.company || 'N/A',
                         contact: user.full_name || user.contact_person || 'N/A',
                         email: user.email || 'N/A',
@@ -1293,7 +1295,9 @@
                 }
             });
             
-            localStorage.setItem('managerSuppliers', JSON.stringify(approvedSuppliers));
+            localStorage.setItem('managerSuppliers', JSON.stringify(managersSuppliers));
+            
+            let approvedSuppliers = managersSuppliers.filter(s => s.status === 'Active');
             
             if (approvedSuppliers.length === 0) {
                 return [
@@ -1327,7 +1331,12 @@
         function logoutUser() {
             if (confirm('Are you sure you want to logout?')) {
                 try {
-                    localStorage.clear();
+                    // Only clear the current session - NEVER localStorage.clear(),
+                    // which would also wipe shared registries such as
+                    // registered_users / managerSuppliers / pending_registrations
+                    // and lock every registered supplier out of their account.
+                    localStorage.removeItem('user_session');
+                    localStorage.removeItem('supplier_session');
                 } catch (e) {
                     console.error('Failed to clear session storage:', e);
                 }

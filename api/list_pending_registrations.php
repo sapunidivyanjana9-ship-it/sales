@@ -13,6 +13,7 @@ endpoint_guard(function (): void {
 
     $pdo = get_pdo();
     ensure_pending_registration_table($pdo);
+    ensure_supplier_request_columns($pdo);
 
     $results = [];
 
@@ -49,9 +50,10 @@ endpoint_guard(function (): void {
     // --- Supplier requests (legacy table) ---
     $stmt = $pdo->query('
         SELECT request_id, request_code, username, company_name, contact_person, business_type,
-               email, phone, address, city, postal_code, materials, status, created_at
+               email, phone, address, city, postal_code, materials, status,
+               submitted_at AS created_at
         FROM supplier_registration_requests
-        ORDER BY created_at DESC
+        ORDER BY submitted_at DESC
     ');
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $results[] = [

@@ -96,9 +96,8 @@ CREATE TABLE customers (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     last_login TIMESTAMP NULL,
     is_active TINYINT(1) DEFAULT 1,
-    INDEX idx_username (username),
-    INDEX idx_email (email),
-    INDEX idx_role (role)
+    INDEX idx_customers_email (email),
+    INDEX idx_customers_user (user_id),
     CONSTRAINT fk_customers_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 

@@ -27,28 +27,6 @@ function short_code(string $prefix): string
     return $prefix . date('ymd') . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
 }
 
-function has_column(PDO $pdo, string $table, string $column): bool
-{
-    $stmt = $pdo->prepare('
-        SELECT COUNT(*)
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
-    ');
-    $stmt->execute([$table, $column]);
-    return (int)$stmt->fetchColumn() > 0;
-}
-
-function ensure_supplier_request_columns(PDO $pdo): void
-{
-    if (!has_column($pdo, 'supplier_registration_requests', 'username')) {
-        $pdo->exec('ALTER TABLE supplier_registration_requests ADD username VARCHAR(50) NULL AFTER request_code');
-    }
-
-    if (!has_column($pdo, 'supplier_registration_requests', 'postal_code')) {
-        $pdo->exec('ALTER TABLE supplier_registration_requests ADD postal_code VARCHAR(20) NULL AFTER city');
-    }
-}
-
 function password_error(string $password): string
 {
     if (strlen($password) < 6 || !preg_match('/[0-9]/', $password) || !preg_match('/[A-Z]/', $password)) {
@@ -221,87 +199,81 @@ endpoint_guard(function (): void {
             'wants_offers' => !empty($input['wants_offers']) ? 1 : 0,
         ]);
 
-        $stmt = $pdo->prepare("
-INSERT INTO users
-(
-username,
-password,
-full_name,
-first_name,
-last_name,
-email,
-phone,
-address,
-city,
-postal_code,
-role,
-created_at
-)
-VALUES
-(
-?,?,?,?,?,?,?,?,?,?,?,
-NOW()
-)
-");
+        $stmt = $pdo->prepare('
+            INSERT INTO pending_registration_requests
+                (request_code, role, username, password, full_name, first_name, last_name,
+                 company_name, business_type, email, phone, address, city, postal_code,
+                 extra_data, status)
+            VALUES (?, "wholesaler", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "Pending")
+        ');
+        $stmt->execute([
+            $requestCode,
+            $username,
+            password_hash($password, PASSWORD_DEFAULT),
+            $fullName,
+            $firstName,
+            $lastName,
+            $companyName,
+            $businessType,
+            $email,
+            $phone,
+            $address,
+            $district,
+            $postalCode,
+            $extraData,
+        ]);
 
-$stmt->execute([
-$username,
-password_hash($password,PASSWORD_DEFAULT),
-$fullName,
-$firstName,
-$lastName,
-$email,
-$phone,
-$address,
-$district,
-$postalCode,
-'customer'
-]);
-
-$pdo->commit();
-
-respond(
-true,
-'Registration successful',
-[
-'redirect'=>'index.html'
-],
-201
-);
-
-    require_fields($input, ['company_name', 'contact_person', 'business_type', 'materials']);
-
-    $businessType = trim((string)$input['business_type']);
-    $allowedSupplierTypes = ['Spice Supplier', 'Raw Material Supplier', 'Packaging Supplier', 'Transport Service'];
-    if (!in_array($businessType, $allowedSupplierTypes, true)) {
-        $pdo->rollBack();
-        fail('Please select a valid supplier business type', 422);
+        $pdo->commit();
+        respond(true, 'Registration submitted. Pending approval by admin.', [
+            'request_code' => $requestCode,
+            'redirect' => 'index.html',
+        ], 201);
     }
 
-    $requestCode = generate_code('SUPREQ');
-    $stmt = $pdo->prepare('
-        INSERT INTO supplier_registration_requests
-            (request_code, username, company_name, contact_person, email, phone, address, city, postal_code, materials, business_type, password, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "Pending")
-    ');
-    $stmt->execute([
-        $requestCode,
-        $username,
-        trim((string)$input['company_name']),
-        trim((string)$input['contact_person']),
-        $email,
-        $phone,
-        $address,
-        $district,
-        $postalCode,
-        trim((string)$input['materials']),
-        $businessType,
-        password_hash($password, PASSWORD_DEFAULT),
-    ]);
+    if ($role === 'supplier') {
+        // The supplier form labels this field "Contact Person" but posts it as
+        // `full_name`; accept either so the UI and API agree.
+        if (!isset($input['contact_person']) && isset($input['full_name'])) {
+            $input['contact_person'] = $input['full_name'];
+        }
 
-    $pdo->commit();
-    respond(true, 'Supplier registration submitted. Pending approval by admin or manager.', [
-        'request_code' => $requestCode,
-        'redirect' => 'index.html',
-    ], 201);
+        require_fields($input, ['company_name', 'contact_person', 'business_type', 'materials']);
+
+        $businessType = trim((string)$input['business_type']);
+        $allowedSupplierTypes = ['Spice Supplier', 'Raw Material Supplier', 'Both', 'Packaging Supplier', 'Transport Service'];
+        if (!in_array($businessType, $allowedSupplierTypes, true)) {
+            $pdo->rollBack();
+            fail('Please select a valid supplier business type', 422);
+        }
+
+        $requestCode = generate_code('SUPREQ');
+        $stmt = $pdo->prepare('
+            INSERT INTO supplier_registration_requests
+                (request_code, username, company_name, contact_person, email, phone, address, city, postal_code, materials, business_type, password, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "Pending")
+        ');
+        $stmt->execute([
+            $requestCode,
+            $username,
+            trim((string)$input['company_name']),
+            trim((string)$input['contact_person']),
+            $email,
+            $phone,
+            $address,
+            $district,
+            $postalCode,
+            trim((string)$input['materials']),
+            $businessType,
+            password_hash($password, PASSWORD_DEFAULT),
+        ]);
+
+        $pdo->commit();
+        respond(true, 'Supplier registration submitted. Pending approval by admin or manager.', [
+            'request_code' => $requestCode,
+            'redirect' => 'index.html',
+        ], 201);
+    }
+
+    $pdo->rollBack();
+    fail('Unsupported registration type', 422);
 });

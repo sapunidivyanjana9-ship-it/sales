@@ -188,6 +188,8 @@
             const userData = {
                 id: Date.now(),
                 full_name: firstName + ' ' + lastName,
+                first_name: firstName,
+                last_name: lastName,
                 username: username,
                 email: email,
                 phone: phone,
@@ -199,6 +201,7 @@
                 spice_preferences: selectedSpices.join(', '),
                 wants_offers: document.getElementById('offers').checked ? 1 : 0,
                 password: password,
+                confirm_password: confirm,
                 role: 'wholesaler',
                 registered_at: new Date().toISOString()
             };

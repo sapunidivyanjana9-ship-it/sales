@@ -715,14 +715,18 @@
 
             // 2. If not found, check managerSuppliers (for suppliers)
             if (!user && role === 'supplier') {
+                // A supplier record only authenticates against its own stored
+                // password. Records synced from the manager/stock dashboards carry
+                // no password at all - those must fall through to registered_users
+                // rather than be granted a shared default credential.
                 let supplier = managerSuppliers.find(s => 
                     s.username && s.username.toLowerCase() === username.toLowerCase() &&
-                    (s.password === password || s.password === 'default123')
+                    typeof s.password === 'string' && s.password.length > 0 &&
+                    s.password === password
                 );
                 if (supplier) {
                     user = {
                         username: supplier.username,
-                        password: supplier.password || 'default123',
                         full_name: supplier.contact || supplier.company,
                         company_name: supplier.company,
                         email: supplier.email,
