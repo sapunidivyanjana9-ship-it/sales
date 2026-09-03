@@ -115,7 +115,7 @@ $customers = $pdo->query("SELECT * FROM customers ORDER BY created_at DESC")->fe
         <div class="sidebar">
             <h2>🌶️ Pearl Land</h2>
             <div class="sidebar-menu">
-                <a href="../manager/manager-dashboard.php">🏠 Dashboard</a>
+                <a href="../pages/dashboards/managerdashboard.html">🏠 Dashboard</a>
                 <a href="index.php" class="active">👥 Customers</a>
                 <a href="../suppliers/index.php">🚚 Suppliers</a>
                 <a href="../products/index.php">📦 Products</a>

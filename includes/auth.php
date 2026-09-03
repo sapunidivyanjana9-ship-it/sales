@@ -28,7 +28,7 @@ function requireRole($role) {
     if (!hasRole($role)) {
         // Redirect to appropriate dashboard based on role
         if (hasRole('manager')) {
-            header('Location: /manager/manager-dashboard.php');
+            header('Location: /pages/dashboards/managerdashboard.html');
         } elseif (hasRole('stock_clerk')) {
             header('Location: /pages/dashboards/stock-dashboard.php');
         } elseif (hasRole('account_clerk')) {

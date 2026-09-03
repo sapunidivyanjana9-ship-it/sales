@@ -59,10 +59,11 @@ endpoint_guard(function (): void {
         // pages/auth/login.html's own roleRedirects map already sends
         // 'manager' here - managerdashboard.html is the dashboard with the
         // real (now backend-wired) Purchase Order review/approve panel.
-        // manager/manager-dashboard.php is a separate, older PHP dashboard
-        // that reads a differently-shaped purchase_orders table and was
-        // never kept in sync with it; redirecting a real login there would
-        // land the manager on a dashboard that can't see what they need.
+        // (manager/manager-dashboard.php used to be a separate, older PHP
+        // dashboard that read a differently-shaped purchase_orders table,
+        // rendered no HTML of its own, and was never kept in sync with this
+        // one - it's been removed; see includes/auth.php and include.php for
+        // the matching redirect-target fix.)
         'manager' => '../dashboards/managerdashboard.html',
         'stock_clerk' => '../dashboards/stock-dashboard.php',
         // account-dashboard.php is an old stub (a different auth/DB layer,
