@@ -16,6 +16,8 @@
  *   $stmt = $db->prepare("SELECT * FROM users WHERE user_id = ?");
  */
 
+require_once __DIR__ . '/../config/db_bootstrap.php';
+
 class Database {
     // Singleton instance
     private static $instance = null;
@@ -24,17 +26,18 @@ class Database {
     private $pdo;
 
     // ─── Configuration ───────────────────────────────────────
-    // Change these values to match your environment
+    // Pulled from config/env.php (env vars / .env / XAMPP-style defaults).
+    // Don't hardcode credentials here - see config/env.php for why.
 
     // Database driver: 'mysql' or 'sqlite'
     private $driver = 'mysql';
 
     // MySQL settings
-    private $host     = 'localhost';
-    private $dbname   = 'pearl_land_db';
-    private $username = 'root';
-    private $password = '';
-    private $charset  = 'utf8';
+    private $host     = DB_HOST;
+    private $dbname   = DB_NAME;
+    private $username = DB_USER;
+    private $password = DB_PASS;
+    private $charset  = DB_CHARSET;
 
     // SQLite settings
     private $sqlitePath = '';
@@ -45,6 +48,7 @@ class Database {
 
         try {
             if ($this->driver === 'mysql') {
+                pelcomo_ensure_schema();
                 $dsn = "mysql:host={$this->host};dbname={$this->dbname};charset={$this->charset}";
                 $this->pdo = new PDO($dsn, $this->username, $this->password);
             } else {

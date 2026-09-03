@@ -8,10 +8,7 @@ if (session_status() === PHP_SESSION_NONE) {
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
 
-const DB_HOST = 'localhost';
-const DB_NAME = 'pearl_land_db';
-const DB_USER = 'root';
-const DB_PASS = '';
+require_once __DIR__ . '/../config/db_bootstrap.php';
 
 function get_pdo(): PDO
 {
@@ -21,7 +18,9 @@ function get_pdo(): PDO
         return $pdo;
     }
 
-    $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
+    pelcomo_ensure_schema();
+
+    $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
     $pdo = new PDO($dsn, DB_USER, DB_PASS, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,

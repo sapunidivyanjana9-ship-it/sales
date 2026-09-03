@@ -5,19 +5,18 @@
 
 require_once __DIR__ . '/../classes/Database.php';
 
-$host = 'localhost';
-$username = 'root';
-$password = '';
-$dbname = 'pearl_land_db';
+// DB_HOST / DB_USER / DB_PASS / DB_NAME come from config/env.php (already
+// pulled in by classes/Database.php above) - env vars / .env / XAMPP-style
+// defaults, so this bootstrap script targets the same DB as the app itself.
 
 try {
     // 1. Connect to MySQL Server (without database) to create the DB first
-    $pdo = new PDO("mysql:host=$host;charset=utf8", $username, $password);
+    $pdo = new PDO("mysql:host=" . DB_HOST . ";charset=utf8", DB_USER, DB_PASS);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
+
     // 2. Create database if not exists
-    $pdo->exec("CREATE DATABASE IF NOT EXISTS `$dbname` CHARACTER SET utf8 COLLATE utf8_general_ci;");
-    echo "<h3>✅ Database `$dbname` created or already exists.</h3>";
+    $pdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8 COLLATE utf8_general_ci;");
+    echo "<h3>✅ Database `" . DB_NAME . "` created or already exists.</h3>";
     
     // 3. Now connect via the Database singleton class
     $db = Database::getInstance();

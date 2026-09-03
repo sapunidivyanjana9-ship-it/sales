@@ -5,17 +5,18 @@
 // ============================================
 
 // ==================== CONFIGURATION ====================
-define('DB_HOST', 'localhost');
-define('DB_USER', 'root');
-define('DB_PASS', '');
-define('DB_NAME', 'stock_clerk_db');
+// DB_HOST / DB_USER / DB_PASS come from the centralized config (env vars /
+// .env / XAMPP-style defaults) - see config/env.php. This dashboard's own
+// database is a second, separate one (stock_clerk_db), so it gets its own
+// constant rather than reusing the shared DB_NAME.
+require_once __DIR__ . '/../../config/env.php';
+define('STOCK_CLERK_DB_NAME', 'stock_clerk_db');
 
-// Main application database (pearl_land_db) - this is where real supplier
-// accounts live (created via registration + admin/manager approval, with
-// login credentials in its `users` table). Suppliers are read from here so
-// that only suppliers who can actually log in ever show up in this
-// dashboard's Supplier Sample Flow.
-define('MAIN_DB_NAME', 'pearl_land_db');
+// Main application database (pearl_land_db, from config/env.php's DB_NAME)
+// - this is where real supplier accounts live (created via registration +
+// admin/manager approval, with login credentials in its `users` table).
+// Suppliers are read from here so that only suppliers who can actually log
+// in ever show up in this dashboard's Supplier Sample Flow.
 
 define('SMTP_HOST', 'smtp.gmail.com');
 define('SMTP_PORT', 587);
@@ -29,11 +30,36 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // ==================== DATABASE FUNCTIONS ====================
 function getDB() {
+    // Tracks whether this request has already checked/installed the schema,
+    // so a fresh clone with no stock_clerk_db yet doesn't need anyone to
+    // visit "?action=install" by hand first - opening the dashboard (or
+    // logging into it) just creates it, same as pearl_land_db's bootstrap
+    // (see config/db_bootstrap.php). Table creation itself is idempotent
+    // (CREATE TABLE IF NOT EXISTS), so this check is only an optimization,
+    // not a correctness requirement.
+    static $verified = false;
+
     try {
-        $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+        // Connect to the server first, without selecting a database - the
+        // previous version connected straight to STOCK_CLERK_DB_NAME, which
+        // fatally errored ("Unknown database") on any server that doesn't
+        // already have it, with no way to recover.
+        $conn = new mysqli(DB_HOST, DB_USER, DB_PASS);
         if ($conn->connect_error) {
             throw new Exception("Connection failed: " . $conn->connect_error);
         }
+
+        $conn->query('CREATE DATABASE IF NOT EXISTS `' . STOCK_CLERK_DB_NAME . '`');
+        $conn->select_db(STOCK_CLERK_DB_NAME);
+
+        if (!$verified) {
+            $verified = true;
+            $result = $conn->query("SHOW TABLES LIKE 'users'");
+            if ($result && $result->num_rows === 0) {
+                installDatabase($conn);
+            }
+        }
+
         return $conn;
     } catch (Exception $e) {
         die(json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]));
@@ -45,7 +71,7 @@ function getDB() {
 // connect, so this dashboard's other features keep working even if the two
 // databases are ever separated onto different servers.
 function getMainDB() {
-    $conn = @new mysqli(DB_HOST, DB_USER, DB_PASS, MAIN_DB_NAME);
+    $conn = @new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
     if ($conn->connect_error) {
         return null;
     }
@@ -111,8 +137,11 @@ function sendEmail($to, $subject, $message) {
 }
 
 // ==================== INSTALLATION / DATABASE SETUP ====================
-function installDatabase() {
-    $conn = getDB();
+function installDatabase($conn = null) {
+    // Accepts an existing connection so getDB() can call this directly once
+    // it's already connected (avoids getDB() -> installDatabase() -> getDB()
+    // recursion); ?action=install still works standalone with no argument.
+    $conn = $conn ?: getDB();
     
     $queries = [
         "CREATE TABLE IF NOT EXISTS users (

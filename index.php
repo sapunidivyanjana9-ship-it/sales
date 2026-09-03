@@ -4,11 +4,8 @@
 // Complete Frontend + Backend
 // ============================================================
 
-// Database Configuration
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'pearl_land_db');
-define('DB_USER', 'root');
-define('DB_PASS', '');
+// Database Configuration (centralized - see config/env.php)
+require_once __DIR__ . '/config/db_bootstrap.php';
 
 // Session start
 if (session_status() === PHP_SESSION_NONE) {
@@ -21,7 +18,8 @@ if (session_status() === PHP_SESSION_NONE) {
 
 function getDBConnection() {
     try {
-        $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS);
+        pelcomo_ensure_schema();
+        $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET, DB_USER, DB_PASS);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         return $pdo;
     } catch(PDOException $e) {
