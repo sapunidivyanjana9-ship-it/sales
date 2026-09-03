@@ -1754,8 +1754,12 @@
             <form id="poForm">
                 <input type="hidden" id="poSampleId">
                 <div class="form-row">
-                    <div class="form-group"><label>Supplier</label><input type="text" id="poSupplier" readonly></div>
-                    <div class="form-group"><label>Material</label><input type="text" id="poMaterial" readonly></div>
+                    <div class="form-group"><label>Supplier</label>
+                        <select id="poSupplier" required>
+                            <option value="">Select Supplier</option>
+                        </select>
+                    </div>
+                    <div class="form-group"><label>Material</label><input type="text" id="poMaterial" required></div>
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>Quantity (kg)</label><input type="number" id="poQty" required></div>
@@ -1860,17 +1864,101 @@
         // Wholesaler Orders
         let wholesalerOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || [];
 
-        let sampleRequests = JSON.parse(localStorage.getItem('sampleRequests')) || [
-            { id: 'SAMP-001', supplier: 'Lanka Spices', material: 'Black Pepper', qty: 2, requestDate: '2026-06-05', status: 'Pending', sampleSent: false },
-            { id: 'SAMP-002', supplier: 'Kalutara Farmers', material: 'Turmeric Roots', qty: 3, requestDate: '2026-06-08', status: 'Pending', sampleSent: false }
-        ];
+        // Sample Requests + QC Results - loaded from the real backend
+        // (api/manager_samples.php), which reads the same stock_clerk_db
+        // tables the Stock Clerk's dashboard writes to. See loadSampleData().
+        let sampleRequests = [];
+        let qcReports = [];
 
-        let qcReports = JSON.parse(localStorage.getItem('qcReports')) || [
-            { sampleId: 'SAMP-001', supplier: 'Lanka Spices', material: 'Black Pepper', testDate: '2026-06-10', result: 'Pass', remarks: 'Good quality', price: 750 },
-            { sampleId: 'SAMP-002', supplier: 'Kalutara Farmers', material: 'Turmeric Roots', testDate: '2026-06-12', result: 'Reject', remarks: 'High moisture', price: null }
-        ];
+        async function loadSampleData() {
+            try {
+                const response = await fetch('../../api/manager_samples.php');
+                const result = await response.json();
 
-        let purchaseOrders = JSON.parse(localStorage.getItem('purchaseOrders')) || [];
+                if (!result.success) {
+                    console.error('Failed to load sample requests:', result.message);
+                    sampleRequests = [];
+                    qcReports = [];
+                    return;
+                }
+
+                sampleRequests = (result.requests || []).map(r => ({
+                    id: r.id,
+                    supplier: r.supplier,
+                    material: r.material,
+                    qty: r.qty,
+                    requestDate: r.request_date,
+                    status: r.status,
+                    sampleSent: !!Number(r.sample_sent)
+                }));
+
+                qcReports = (result.qc_reports || []).map(q => ({
+                    sampleId: q.sample_id,
+                    supplier: q.supplier,
+                    material: q.material,
+                    testDate: q.test_date,
+                    result: q.result,
+                    remarks: q.remarks,
+                    price: q.price,
+                    qualityScore: q.quality_score
+                }));
+            } catch (err) {
+                console.error('Could not reach sample request service:', err);
+                sampleRequests = [];
+                qcReports = [];
+            }
+        }
+
+        // Real, registered suppliers (api/get_suppliers.php - the same
+        // pearl_land_db.suppliers table api/supplier_purchase_orders.php
+        // matches a PO's `supplier` string against by exact name). The PO
+        // form's Supplier field used to be free text: a manager typing
+        // "Lanka Spice" instead of the registered "Lanka Spices" created a
+        // PO that would never show up on that supplier's dashboard, with no
+        // error anywhere. Loading the real names into a dropdown makes that
+        // mismatch impossible.
+        let registeredSuppliers = [];
+
+        async function loadRegisteredSuppliers() {
+            try {
+                const response = await fetch('../../api/get_suppliers.php');
+                const result = await response.json();
+                registeredSuppliers = result.success ? (result.suppliers || []) : [];
+            } catch (err) {
+                console.error('Could not reach supplier directory service:', err);
+                registeredSuppliers = [];
+            }
+            populatePOSupplierOptions();
+        }
+
+        function populatePOSupplierOptions(selected) {
+            const select = document.getElementById('poSupplier');
+            const current = selected !== undefined ? selected : select.value;
+            select.innerHTML = '<option value="">Select Supplier</option>';
+            registeredSuppliers
+                .filter(s => (s.status || '').toLowerCase() === 'active')
+                .forEach(s => {
+                    const option = document.createElement('option');
+                    option.value = s.name;
+                    option.textContent = s.name;
+                    select.appendChild(option);
+                });
+            // A sample's supplier (or a since-deactivated supplier on an
+            // older PO) may not be in the active list above - keep it
+            // selectable rather than silently clearing the field.
+            if (current && !Array.from(select.options).some(o => o.value === current)) {
+                const option = document.createElement('option');
+                option.value = current;
+                option.textContent = current + ' (inactive)';
+                select.appendChild(option);
+            }
+            select.value = current || '';
+        }
+
+        // Purchase Orders - loaded from the real backend (api/manager_purchase_orders.php),
+        // which reads/writes the same stock_clerk_db.purchase_orders table the
+        // Stock Clerk's dashboard creates POs into. See loadPurchaseOrders().
+        let purchaseOrders = [];
         let grns = JSON.parse(localStorage.getItem('grns')) || [];
 
         let sampleOrders = [
@@ -1968,7 +2056,7 @@
         }
 
         // ===================== NAVIGATION =====================
-        function showSection(section) {
+        async function showSection(section) {
             document.querySelectorAll('.section-content').forEach(el => el.classList.remove('active'));
             document.getElementById(section + 'Section').classList.add('active');
             document.querySelectorAll('.nav-menu a').forEach(el => el.classList.remove('active'));
@@ -1981,8 +2069,8 @@
             if (section === 'wholesaler-orders') renderWholesalerOrders();
             if (section === 'orders') renderOrders();
             if (section === 'all-orders') renderAllOrders();
-            if (section === 'samples') renderSamples();
-            if (section === 'po-approvals') renderPOs();
+            if (section === 'samples') { await loadSampleData(); renderSamples(); }
+            if (section === 'po-approvals') { await loadPurchaseOrders(); renderPOs(); }
             if (section === 'products') renderProducts();
             if (section === 'suppliers') renderSuppliers();
             if (section === 'reports') {
@@ -2293,9 +2381,8 @@
             document.getElementById('bestSamplesBody').innerHTML = bestHtml || '<tr><td colspan="6">No samples passed QC yet</td></tr>';
         }
 
-        function refreshSamples() {
-            sampleRequests = JSON.parse(localStorage.getItem('sampleRequests')) || sampleRequests;
-            qcReports = JSON.parse(localStorage.getItem('qcReports')) || qcReports;
+        async function refreshSamples() {
+            await loadSampleData();
             renderSamples();
             alert('✅ Samples refreshed!');
         }
@@ -2309,7 +2396,7 @@
                 return;
             }
             document.getElementById('poSampleId').value = sampleId;
-            document.getElementById('poSupplier').value = sample.supplier;
+            populatePOSupplierOptions(sample.supplier);
             document.getElementById('poMaterial').value = sample.material;
             document.getElementById('poPrice').value = qc.price || '';
             document.getElementById('poQty').value = sample.qty * 25 || 50;
@@ -2320,46 +2407,100 @@
             document.getElementById('poModal').style.display = 'flex';
         }
 
-        document.getElementById('poForm').addEventListener('submit', function(e) {
+        // Creates a real Purchase Order via api/manager_purchase_orders.php,
+        // persisted into the same stock_clerk_db.purchase_orders table the
+        // Stock Clerk's own dashboard reads/writes - not a localStorage mock.
+        document.getElementById('poForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const sampleId = document.getElementById('poSampleId').value;
-            const supplier = document.getElementById('poSupplier').value;
-            const material = document.getElementById('poMaterial').value;
+            const supplier = document.getElementById('poSupplier').value.trim();
+            const material = document.getElementById('poMaterial').value.trim();
             const qty = parseFloat(document.getElementById('poQty').value);
             const price = parseFloat(document.getElementById('poPrice').value);
             const deliveryDate = document.getElementById('poDeliveryDate').value;
             const terms = document.getElementById('poTerms').value;
             const paymentStatus = document.getElementById('poPaymentStatus').value;
-            const approvedBy = document.getElementById('poApprovedBy').value;
 
+            if (!supplier || !material) {
+                alert('Please fill in supplier and material');
+                return;
+            }
             if (!qty || !price || qty <= 0 || price <= 0) {
                 alert('Please fill valid quantity and price');
                 return;
             }
+            if (!deliveryDate) {
+                alert('Please choose an expected delivery date');
+                return;
+            }
 
-            const poId = 'PO-' + String(purchaseOrders.length + 1).padStart(3, '0');
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+
+            const result = await callManagerPOAction({
+                action: 'create',
+                sample_id: sampleId || null,
+                supplier, material, qty, unit_price: price,
+                delivery_date: deliveryDate, terms
+            });
+
+            submitBtn.disabled = false;
+
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not create this PO. Please try again.'));
+                return;
+            }
+
+            // The new PO's payment_status defaults to "Pending" server-side;
+            // apply the form's chosen status too if it differs.
+            if (paymentStatus && paymentStatus !== 'Pending') {
+                await callManagerPOAction({ action: 'update_payment_status', po_id: result.purchase_order.id, payment_status: paymentStatus });
+            }
+
             const total = qty * price;
-
-            const newPO = {
-                id: poId, sampleId: sampleId, supplier: supplier, material: material, qty: qty, unitPrice: price,
-                total: total, deliveryDate: deliveryDate, paymentTerms: terms, paymentStatus: paymentStatus,
-                approvedBy: approvedBy, status: 'Pending Approval', createdAt: new Date().toISOString()
-            };
-
-            purchaseOrders.push(newPO);
-            localStorage.setItem('purchaseOrders', JSON.stringify(purchaseOrders));
-
-            const sample = sampleRequests.find(s => s.id === sampleId);
-            if (sample) { sample.status = 'PO Created'; localStorage.setItem('sampleRequests', JSON.stringify(sampleRequests)); }
-
             closeModal('poModal');
-            alert(`✅ PO ${poId} created successfully!\n\nSupplier: ${supplier}\nMaterial: ${material}\nQuantity: ${qty}kg\nTotal: Rs. ${total.toLocaleString()}\nDelivery: ${deliveryDate}\nPayment Terms: ${terms}\nPayment Status: ${paymentStatus}`);
+            alert(`✅ PO ${result.purchase_order.id} created successfully!\n\nSupplier: ${supplier}\nMaterial: ${material}\nQuantity: ${qty}kg\nTotal: Rs. ${total.toLocaleString()}\nDelivery: ${deliveryDate}\nPayment Terms: ${terms}\nPayment Status: ${paymentStatus}`);
+
+            await Promise.all([loadPurchaseOrders(), loadSampleData()]);
             renderSamples();
             renderPOs();
             renderDashboard();
         });
 
         // ===================== PO APPROVALS =====================
+        // Loads real Purchase Orders (the Stock Clerk's stock_clerk_db.purchase_orders
+        // table) so this panel reviews what was actually created, not a
+        // localStorage mock.
+        async function loadPurchaseOrders() {
+            try {
+                const response = await fetch('../../api/manager_purchase_orders.php');
+                const result = await response.json();
+
+                if (!result.success) {
+                    console.error('Failed to load purchase orders:', result.message);
+                    purchaseOrders = [];
+                    return;
+                }
+
+                purchaseOrders = (result.purchase_orders || []).map(r => ({
+                    id: r.id,
+                    sampleId: r.sample_id,
+                    supplier: r.supplier,
+                    material: r.material,
+                    qty: r.qty,
+                    unitPrice: parseFloat(r.unit_price),
+                    total: parseFloat(r.total),
+                    deliveryDate: r.delivery_date,
+                    paymentTerms: r.terms,
+                    paymentStatus: r.payment_status || 'Pending',
+                    status: r.status
+                }));
+            } catch (err) {
+                console.error('Could not reach purchase order service:', err);
+                purchaseOrders = [];
+            }
+        }
+
         function renderPOs() {
             function getPaymentBadge(terms) {
                 if (terms === 'Cash on Delivery' || terms === 'COD') return '<span class="payment-badge cod">💵 COD</span>';
@@ -2418,45 +2559,75 @@
             document.getElementById('approvedPOList').innerHTML = approvedHtml || '<tr><td colspan="8">No approved POs</td></tr>';
         }
 
-        function approvePO(id) {
+        async function callManagerPOAction(body) {
+            try {
+                const response = await fetch('../../api/manager_purchase_orders.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                return await response.json();
+            } catch (err) {
+                return { success: false, message: 'Could not reach the server. Please check your connection and try again.' };
+            }
+        }
+
+        async function approvePO(id) {
             let po = purchaseOrders.find(p => p.id === id);
-            if (po) {
-                po.status = 'Approved';
-                po.approvedDate = new Date().toISOString().split('T')[0];
-                localStorage.setItem('purchaseOrders', JSON.stringify(purchaseOrders));
-                alert(`✅ PO ${id} approved!\nPayment Terms: ${po.paymentTerms}\nPayment Status: ${po.paymentStatus}`);
-                renderPOs();
-                renderDashboard();
+            if (!po) return;
+
+            const result = await callManagerPOAction({ action: 'approve', po_id: id });
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not approve this PO. Please try again.'));
+                return;
             }
+
+            await loadPurchaseOrders();
+            alert(`✅ PO ${id} approved!\nPayment Terms: ${po.paymentTerms}\nPayment Status: ${po.paymentStatus}`);
+            renderPOs();
+            renderDashboard();
         }
 
-        function rejectPO(id) {
-            if (confirm('Reject PO ' + id + '?')) {
-                purchaseOrders = purchaseOrders.filter(p => p.id !== id);
-                localStorage.setItem('purchaseOrders', JSON.stringify(purchaseOrders));
-                alert('❌ PO ' + id + ' rejected.');
-                renderPOs();
+        async function rejectPO(id) {
+            if (!confirm('Reject PO ' + id + '?')) return;
+
+            const result = await callManagerPOAction({ action: 'reject', po_id: id });
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not reject this PO. Please try again.'));
+                return;
             }
+
+            await loadPurchaseOrders();
+            alert('❌ PO ' + id + ' rejected.');
+            renderPOs();
+            renderDashboard();
         }
 
-        function updatePaymentStatus(id) {
+        async function updatePaymentStatus(id) {
             let po = purchaseOrders.find(p => p.id === id);
             if (!po) { alert('PO not found!'); return; }
             let current = po.paymentStatus || 'Pending';
             let newStatus = prompt(`Current Payment Status: ${current}\n\nEnter new status:\n- Pending\n- Paid\n- Overdue`, current);
-            if (newStatus && ['Pending', 'Paid', 'Overdue'].includes(newStatus)) {
-                po.paymentStatus = newStatus;
-                localStorage.setItem('purchaseOrders', JSON.stringify(purchaseOrders));
-                renderPOs();
-                alert(`✅ Payment status updated to: ${newStatus}`);
-            } else if (newStatus !== null) {
+            if (newStatus === null) return;
+            if (!['Pending', 'Paid', 'Overdue'].includes(newStatus)) {
                 alert('Invalid status! Use: Pending, Paid, or Overdue');
+                return;
             }
+
+            const result = await callManagerPOAction({ action: 'update_payment_status', po_id: id, payment_status: newStatus });
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not update payment status. Please try again.'));
+                return;
+            }
+
+            await loadPurchaseOrders();
+            renderPOs();
+            alert(`✅ Payment status updated to: ${newStatus}`);
         }
 
         function openPOModal() {
             document.getElementById('poSampleId').value = '';
-            document.getElementById('poSupplier').value = '';
+            populatePOSupplierOptions('');
             document.getElementById('poMaterial').value = '';
             document.getElementById('poPrice').value = '';
             document.getElementById('poQty').value = '';
@@ -3300,14 +3471,22 @@
         renderSuppliers();
         showSection('dashboard');
 
-        setInterval(() => {
+        // Purchase Orders + Sample/QC data come from the real backend, not
+        // localStorage - load them once at startup, then refresh whatever
+        // depends on them.
+        (async function initRealData() {
+            await Promise.all([loadPurchaseOrders(), loadSampleData(), loadRegisteredSuppliers()]);
+            renderPOs();
+            renderSamples();
+            renderDashboard();
+        })();
+
+        setInterval(async () => {
             customerOrders = JSON.parse(localStorage.getItem('customerOrders')) || customerOrders;
             supplierOrders = JSON.parse(localStorage.getItem('supplierOrders')) || supplierOrders;
             wholesalerOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || wholesalerOrders;
-            sampleRequests = JSON.parse(localStorage.getItem('sampleRequests')) || sampleRequests;
-            qcReports = JSON.parse(localStorage.getItem('qcReports')) || qcReports;
-            purchaseOrders = JSON.parse(localStorage.getItem('purchaseOrders')) || purchaseOrders;
             products = JSON.parse(localStorage.getItem('managerProducts')) || products;
+            await Promise.all([loadPurchaseOrders(), loadSampleData(), loadRegisteredSuppliers()]);
             loadSupplierRegistrations();
 
             if (document.getElementById('wholesaler-ordersSection').classList.contains('active')) {
@@ -3315,6 +3494,12 @@
             }
             if (document.getElementById('all-ordersSection').classList.contains('active')) {
                 renderAllOrders();
+            }
+            if (document.getElementById('po-approvalsSection').classList.contains('active')) {
+                renderPOs();
+            }
+            if (document.getElementById('samplesSection').classList.contains('active')) {
+                renderSamples();
             }
             renderDashboard();
         }, 10000);

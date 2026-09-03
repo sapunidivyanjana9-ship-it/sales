@@ -1,10 +1,33 @@
 <?php
 require_once __DIR__ . '/db_connect.php';
 
+// Manager/admin/etc. accounts are never self-registered (unlike customer,
+// supplier, wholesaler), and this app ships with no seeded manager row - so
+// without this, no manager could ever log in through a real account at all.
+// Bootstraps the same manager/manager123 credentials the login page has
+// always advertised as its manager demo login, as a real `users` row, the
+// first time any login is attempted on a fresh install. A no-op once any
+// manager account exists.
+function ensure_default_manager_account(PDO $pdo): void
+{
+    $stmt = $pdo->query('SELECT user_id FROM users WHERE role = "manager" LIMIT 1');
+    if ($stmt->fetch()) {
+        return;
+    }
+
+    $stmt = $pdo->prepare('
+        INSERT INTO users (username, password, role, full_name, email, status)
+        VALUES (?, ?, "manager", ?, ?, "active")
+    ');
+    $stmt->execute(['manager', password_hash('manager123', PASSWORD_DEFAULT), 'Manager', 'manager@pearlland.com']);
+}
+
 endpoint_guard(function (): void {
     require_method(['POST']);
     $input = json_input();
     require_fields($input, ['username', 'password']);
+
+    ensure_default_manager_account(get_pdo());
 
     $stmt = get_pdo()->prepare('SELECT * FROM users WHERE username = ? LIMIT 1');
     $stmt->execute([trim((string)$input['username'])]);
@@ -33,9 +56,19 @@ endpoint_guard(function (): void {
 
     $redirects = [
         'admin' => '../dashboards/admin-dashboard.php',
-        'manager' => '../../manager/manager-dashboard.php',
+        // pages/auth/login.html's own roleRedirects map already sends
+        // 'manager' here - managerdashboard.html is the dashboard with the
+        // real (now backend-wired) Purchase Order review/approve panel.
+        // manager/manager-dashboard.php is a separate, older PHP dashboard
+        // that reads a differently-shaped purchase_orders table and was
+        // never kept in sync with it; redirecting a real login there would
+        // land the manager on a dashboard that can't see what they need.
+        'manager' => '../dashboards/managerdashboard.html',
         'stock_clerk' => '../dashboards/stock-dashboard.php',
-        'account_clerk' => '../dashboards/account-dashboard.php',
+        // account-dashboard.php is an old stub (a different auth/DB layer,
+        // and no PO/GRN/supplier-payment UI at all) - accountdashboard.html
+        // is the real dashboard, same as managerdashboard.html above.
+        'account_clerk' => '../dashboards/accountdashboard.html',
         'customer' => '../customer/customer.html',
         'wholesaler' => '../dashboards/wholeseller.html',
         'supplier' => '../dashboards/supplierdashboard.html',

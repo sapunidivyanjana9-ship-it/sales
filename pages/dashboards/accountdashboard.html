@@ -989,8 +989,6 @@
         // ===================== DATA =====================
         let customerPayments = JSON.parse(localStorage.getItem('custPay') || 'null');
         let wholesalerPayments = JSON.parse(localStorage.getItem('wholePay') || 'null');
-        let supplierPayments = JSON.parse(localStorage.getItem('supPay') || 'null');
-        let grns = JSON.parse(localStorage.getItem('grns') || 'null');
         let supplierInvoices = JSON.parse(localStorage.getItem('supplierInvoices')) || [];
 
         // Sample data if nothing in storage
@@ -1004,28 +1002,86 @@
             { id: 'WPAY-001', name: 'Colombo Wholesale Co.', invoice: 'WINV-2026-0010', amount: 85000,
                 method: 'Bank Transfer', date: '2026-05-15', reference: 'TRW001', type: 'Wholesaler' }
         ];
-        if (!supplierPayments) supplierPayments = [
-            { id: 'SPAY-001', grnId: 'GRN-001', supplier: 'Silva Spices', amount: 600000, method: 'Bank Transfer',
-                date: '2026-05-25', reference: 'TRS001', type: 'Supplier' }
-        ];
-        if (!grns) grns = [
-            { id: 'GRN-001', poId: 'PO-001', supplier: 'Silva Spices', material: 'Black Pepper', receivedQty: 500,
-                unitPrice: 1200, totalAmount: 600000, status: 'Approved' },
-            { id: 'GRN-002', poId: 'PO-002', supplier: 'Lanka Herbs', material: 'Turmeric', receivedQty: 200,
-                unitPrice: 800, totalAmount: 160000, status: 'Approved' },
-            { id: 'GRN-003', poId: 'PO-003', supplier: 'Hill Country Farms', material: 'Cardamom', receivedQty: 100,
-                unitPrice: 3500, totalAmount: 350000, status: 'Pending' }
-        ];
+
+        // GRNs - loaded from the real backend (api/account_grns.php), which
+        // reads the same stock_clerk_db.grns table the Stock Clerk's own
+        // dashboard creates GRNs into (pages/dashboards/stock-dashboard.php's
+        // createGRN()) - not a localStorage mock, and not tied to whichever
+        // browser the Stock Clerk happened to use. supplierPayments is
+        // derived from it (a GRN's own payment_status/method/date/reference
+        // columns), rather than kept as separate mock state that could drift
+        // out of sync with what was actually paid.
+        let grns = [];
+        let supplierPayments = [];
+
+        async function callAccountGRNAction(body) {
+            try {
+                const response = await fetch('../../api/account_grns.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                return await response.json();
+            } catch (err) {
+                return { success: false, message: 'Could not reach the server. Please check your connection and try again.' };
+            }
+        }
+
+        function deriveSupplierPayments() {
+            supplierPayments = grns
+                .filter(g => g.paymentStatus === 'Paid')
+                .map(g => ({
+                    id: 'SPAY-' + g.id,
+                    grnId: g.id,
+                    supplier: g.supplier,
+                    amount: g.totalAmount,
+                    method: g.paymentMethod || '-',
+                    date: g.paymentDate || '',
+                    reference: g.paymentReference || '',
+                    type: 'Supplier'
+                }));
+        }
+
+        async function loadGRNs() {
+            try {
+                const response = await fetch('../../api/account_grns.php');
+                const result = await response.json();
+
+                if (!result.success) {
+                    console.error('Failed to load GRNs:', result.message);
+                    grns = [];
+                } else {
+                    grns = (result.grns || []).map(g => ({
+                        id: g.id,
+                        poId: g.po_id,
+                        supplier: g.supplier,
+                        material: g.material,
+                        orderedQty: g.ordered_qty,
+                        receivedQty: g.received_qty,
+                        unitPrice: parseFloat(g.unit_price),
+                        totalAmount: parseFloat(g.total_amount),
+                        status: g.status,
+                        paymentStatus: g.payment_status || 'Pending',
+                        paymentMethod: g.payment_method,
+                        paymentReference: g.payment_reference,
+                        paymentDate: g.payment_date
+                    }));
+                }
+            } catch (err) {
+                console.error('Could not reach GRN service:', err);
+                grns = [];
+            }
+            deriveSupplierPayments();
+        }
 
         function save() {
             localStorage.setItem('custPay', JSON.stringify(customerPayments));
             localStorage.setItem('wholePay', JSON.stringify(wholesalerPayments));
-            localStorage.setItem('supPay', JSON.stringify(supplierPayments));
             localStorage.setItem('supplierInvoices', JSON.stringify(supplierInvoices));
         }
 
         // ===================== NAVIGATION =====================
-        function show(id) {
+        async function show(id) {
             document.querySelectorAll('.sec').forEach(s => s.classList.remove('act'));
             document.getElementById('sec-' + id).classList.add('act');
             document.querySelectorAll('.side li a').forEach(a => a.classList.remove('act'));
@@ -1033,8 +1089,10 @@
             if (nav) nav.classList.add('act');
             if (id === 'history') renderHistory();
             if (id === 'outstanding') renderOutstanding();
-            if (id === 'sup-pay') renderSupPay();
-            if (id === 'sup-invoices') renderSupInvoices();
+            // Re-fetch so a GRN the Stock Clerk just created, or a payment
+            // processed from another session, shows up without a reload.
+            if (id === 'sup-pay') { await loadGRNs(); renderSupPay(); }
+            if (id === 'sup-invoices') { await loadGRNs(); renderSupInvoices(); }
             if (id === 'cust-pay') renderCustPay();
             if (id === 'whole-pay') renderWholePay();
         }
@@ -1274,7 +1332,7 @@
             let approved = grns.filter(g => g.status === 'Approved' || g.status === 'Manager Approved');
             let html = '';
             approved.forEach(g => {
-                let paid = supplierPayments.some(p => p.grnId === g.id);
+                let paid = g.paymentStatus === 'Paid';
                 html += `<tr>
                             <td>${g.id}</td><td>${g.poId}</td><td>${g.supplier}</td><td>${g.material}</td>
                             <td>${g.receivedQty || g.qty} kg</td><td>Rs.${(g.unitPrice || g.totalAmount / g.receivedQty).toLocaleString()}</td>
@@ -1298,7 +1356,9 @@
             document.getElementById('sup-form').scrollIntoView({ behavior: 'smooth' });
         }
 
-        function processSupPay() {
+        // Processes the payment via api/account_grns.php, persisting it onto
+        // the real GRN row in stock_clerk_db.grns - not a localStorage mock.
+        async function processSupPay() {
             let grnId = document.getElementById('sf-grn').value;
             let supplier = document.getElementById('sf-sup').value;
             let amount = parseFloat(document.getElementById('sup-form').dataset.amount);
@@ -1306,16 +1366,27 @@
             let method = document.getElementById('sf-method').value;
             let ref = document.getElementById('sf-ref').value.trim();
             if (!grnId) { alert('No GRN selected'); return; }
-            let id = 'SPAY-' + String(supplierPayments.length + 1).padStart(3, '0');
-            supplierPayments.push({ id, grnId, supplier, amount, method, date: date || new Date().toISOString().split(
-                    'T')[0], reference: ref, type: 'Supplier' });
-            save();
+
+            const result = await callAccountGRNAction({
+                action: 'process_payment',
+                grn_id: grnId,
+                payment_method: method,
+                reference_no: ref,
+                payment_date: date
+            });
+
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not process this payment. Please try again.'));
+                return;
+            }
+
+            await loadGRNs();
             document.getElementById('sup-form').style.display = 'none';
             renderSupPay();
             updateStats();
             buildRevChart();
             buildPieChart();
-            alert(`✅ Payment processed: ${id}\nSupplier: ${supplier}\nAmount: Rs.${amount.toLocaleString()}\nMethod: ${method}\nRef: ${ref || 'N/A'}`);
+            alert(`✅ Payment processed for ${grnId}\nSupplier: ${supplier}\nAmount: Rs.${amount.toLocaleString()}\nMethod: ${method}\nRef: ${ref || 'N/A'}`);
         }
 
         // ===================== SUPPLIER INVOICES (Integrated with GRNs) =====================
@@ -1620,7 +1691,7 @@
         }
 
         // ===================== INIT =====================
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             let today = new Date().toISOString().split('T')[0];
             document.getElementById('cp-date').value = today;
             document.getElementById('wp-date').value = today;
@@ -1629,6 +1700,7 @@
             document.getElementById('rpt-from').value = '2026-01-01';
             document.getElementById('rpt-to').value = today;
 
+            await loadGRNs();
             updateStats();
             renderCustPay();
             renderWholePay();
@@ -1638,16 +1710,17 @@
             renderHistory();
             setTimeout(() => { buildRevChart(); buildPieChart(); }, 150);
 
-            // Auto sync
-            setInterval(() => {
-                let storedGrns = JSON.parse(localStorage.getItem('grns'));
-                if (storedGrns) grns = storedGrns;
+            // Auto sync - re-fetches real GRNs/payments (api/account_grns.php)
+            // so a GRN the Stock Clerk just created, or a payment processed
+            // from another session, shows up without a reload.
+            setInterval(async () => {
+                await loadGRNs();
                 let storedInvoices = JSON.parse(localStorage.getItem('supplierInvoices'));
                 if (storedInvoices) supplierInvoices = storedInvoices;
                 renderSupPay();
                 renderSupInvoices();
                 updateStats();
-            }, 5000);
+            }, 10000);
         });
 
         console.log('💰 Account Clerk Dashboard loaded successfully!');

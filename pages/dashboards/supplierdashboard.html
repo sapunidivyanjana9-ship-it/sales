@@ -598,7 +598,7 @@
                 <div style="background: white; padding: 20px; border-radius: 12px;">
                     <div class="section-title">📋 Purchase Orders</div>
                     <table class="data-table">
-                        <thead><tr><th>PO Number</th><th>Material</th><th>Quantity</th><th>Order Date</th><th>Amount</th><th>Payment Status</th><th>Order Status</th></tr></thead>
+                        <thead><tr><th>PO Number</th><th>Material</th><th>Quantity</th><th>Delivery Date</th><th>Amount</th><th>Payment Status</th><th>Order Status</th><th>Action</th></tr></thead>
                         <tbody id="purchaseOrdersBody"></tbody>
                     </table>
                 </div>
@@ -637,13 +637,13 @@
             username: session.username
         };
 
-        // ============ SUPPLIER SAMPLE FLOW DATA (from localStorage) ============
+        // ============ SUPPLIER SAMPLE FLOW DATA (from the real backend) ============
         // Sample Requests from Stock Clerk
         let sampleRequests = [];
-        
-        // Samples sent by supplier
+
+        // Samples sent by supplier (derived from sampleRequests, see loadSupplierFlowData)
         let sentSamples = [];
-        
+
         // QC Results from Stock Clerk
         let qcResults = [];
         
@@ -662,56 +662,145 @@
             { id: 3, name: 'Cinnamon Sticks', category: 'Spice', price: 350, stock: 400, status: 'Pending' }
         ];
 
-        // Purchase Orders
-        let purchaseOrders = [
-            { id: 'PO-2026-001', material: 'Turmeric Roots', qty: 500, orderDate: '2026-03-15', amount: 100000, paymentStatus: 'Pending', orderStatus: 'Pending' },
-            { id: 'PO-2026-002', material: 'Chili Peppers', qty: 300, orderDate: '2026-03-16', amount: 54000, paymentStatus: 'Paid', orderStatus: 'Delivered' },
-            { id: 'PO-2026-003', material: 'Cinnamon Sticks', qty: 200, orderDate: '2026-03-17', amount: 70000, paymentStatus: 'Processing', orderStatus: 'Processing' }
-        ];
+        // Purchase Orders - loaded from the real backend
+        // (api/supplier_purchase_orders.php), which reads/writes the same
+        // stock_clerk_db.purchase_orders table the Manager approves POs in.
+        // See loadPurchaseOrders() below.
+        let purchaseOrders = [];
+
+        async function loadPurchaseOrders() {
+            try {
+                const response = await fetch('../../api/supplier_purchase_orders.php');
+                const result = await response.json();
+
+                if (!result.success) {
+                    console.error('Failed to load purchase orders:', result.message);
+                    purchaseOrders = [];
+                    return;
+                }
+
+                purchaseOrders = (result.purchase_orders || []).map(r => ({
+                    id: r.id,
+                    material: r.material,
+                    qty: r.qty,
+                    deliveryDate: r.delivery_date,
+                    amount: parseFloat(r.total),
+                    paymentStatus: r.payment_status || 'Pending',
+                    status: r.status,
+                    accepted: !!Number(r.supplier_accepted),
+                    delivered: !!Number(r.supplier_delivered)
+                }));
+            } catch (err) {
+                console.error('Could not reach purchase order service:', err);
+                purchaseOrders = [];
+            }
+        }
+
+        async function callSupplierPOAction(body) {
+            try {
+                const response = await fetch('../../api/supplier_purchase_orders.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                return await response.json();
+            } catch (err) {
+                return { success: false, message: 'Could not reach the server. Please check your connection and try again.' };
+            }
+        }
+
+        async function acceptPurchaseOrder(id) {
+            const result = await callSupplierPOAction({ action: 'accept', po_id: id });
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not accept this PO. Please try again.'));
+                return;
+            }
+            await loadPurchaseOrders();
+            alert(`✅ PO ${id} accepted! You can now deliver the goods.`);
+            renderPurchaseOrders();
+            renderDashboardStats();
+        }
+
+        async function deliverPurchaseOrder(id) {
+            if (!confirm(`Confirm that the goods for PO ${id} have been delivered?`)) return;
+            const result = await callSupplierPOAction({ action: 'deliver', po_id: id });
+            if (!result.success) {
+                alert('❌ ' + (result.message || 'Could not mark this PO as delivered. Please try again.'));
+                return;
+            }
+            await loadPurchaseOrders();
+            alert(`🚚 PO ${id} marked as delivered!`);
+            renderPurchaseOrders();
+            renderDashboardStats();
+        }
 
         let payments = [
             { id: 'PAY-001', poNumber: 'PO-2026-002', material: 'Chili Peppers', amount: 54000, date: '2026-03-24', status: 'Paid' }
         ];
 
-        // Load data from localStorage (shared with Stock Clerk)
-        function loadSupplierFlowData() {
-            let storedSampleRequests = localStorage.getItem('sampleRequests');
-            if(storedSampleRequests) {
-                let allRequests = JSON.parse(storedSampleRequests);
-                // Filter only requests for current supplier
-                sampleRequests = allRequests.filter(r => r.supplier === currentSupplier.name);
-            } else {
-                sampleRequests = [
-                    { id: 'SAMP-001', supplier: 'Lanka Spices', material: 'Black Pepper', qty: 2, requestDate: '2026-06-05', status: 'Pending', sampleSent: false },
-                    { id: 'SAMP-002', supplier: 'Lanka Spices', material: 'Turmeric Roots', qty: 3, requestDate: '2026-06-08', status: 'Pending', sampleSent: false }
-                ];
-            }
-            
-            let storedQCReports = localStorage.getItem('qcReports');
-            if(storedQCReports) {
-                let allQC = JSON.parse(storedQCReports);
-                qcResults = allQC.filter(q => q.supplier === currentSupplier.name);
-            } else {
-                qcResults = [
-                    { sampleId: 'SAMP-001', supplier: 'Lanka Spices', material: 'Black Pepper', testDate: '2026-06-10', result: 'Pass', remarks: 'Good quality', price: 750, qualityScore: 8.5 },
-                    { sampleId: 'SAMP-002', supplier: 'Lanka Spices', material: 'Turmeric Roots', testDate: '2026-06-12', result: 'Reject', remarks: 'High moisture content', price: null }
-                ];
-            }
-            
-            // Load sent samples
-            let storedSentSamples = localStorage.getItem('sentSamples');
-            if(storedSentSamples) {
-                sentSamples = JSON.parse(storedSentSamples);
-            } else {
-                sentSamples = [
-                    { requestId: 'SAMP-001', material: 'Black Pepper', sentDate: '2026-06-06', status: 'QC Completed' }
-                ];
-            }
-        }
+        // Load sample requests + QC results from the real backend
+        // (api/supplier_samples.php), which reads/writes the same
+        // stock_clerk_db.sample_requests / qc_reports tables the Stock
+        // Clerk's dashboard uses - not a localStorage mock.
+        async function loadSupplierFlowData() {
+            try {
+                const response = await fetch('../../api/supplier_samples.php');
+                const result = await response.json();
 
-        // Save sent samples to localStorage
-        function saveSentSamples() {
-            localStorage.setItem('sentSamples', JSON.stringify(sentSamples));
+                if (!result.success) {
+                    console.error('Failed to load sample requests:', result.message);
+                    sampleRequests = [];
+                    qcResults = [];
+                    sentSamples = [];
+                    return;
+                }
+
+                // The server resolves the supplier's real company name from
+                // the logged-in session - prefer it over the guess made at
+                // login time (which could fall back to a contact person's
+                // name rather than the company name).
+                if (result.supplier_name) {
+                    currentSupplier.name = result.supplier_name;
+                }
+
+                sampleRequests = (result.requests || []).map(r => ({
+                    id: r.id,
+                    supplier: r.supplier,
+                    material: r.material,
+                    qty: r.qty,
+                    requestDate: r.request_date,
+                    status: r.status,
+                    sampleSent: !!Number(r.sample_sent),
+                    sampleSentDate: r.sample_sent_date
+                }));
+
+                qcResults = (result.qc_reports || []).map(q => ({
+                    sampleId: q.sample_id,
+                    supplier: q.supplier,
+                    material: q.material,
+                    testDate: q.test_date,
+                    result: q.result,
+                    remarks: q.remarks,
+                    price: q.price,
+                    qualityScore: q.quality_score
+                }));
+
+                // "Sent samples" is just the subset of real requests the
+                // supplier has already sent - derived, not separately stored.
+                sentSamples = sampleRequests
+                    .filter(s => s.sampleSent)
+                    .map(s => ({
+                        requestId: s.id,
+                        material: s.material,
+                        sentDate: s.sampleSentDate || s.requestDate,
+                        status: s.status
+                    }));
+            } catch (err) {
+                console.error('Could not reach sample request service:', err);
+                sampleRequests = [];
+                qcResults = [];
+                sentSamples = [];
+            }
         }
 
         // Render Dashboard Stats
@@ -719,9 +808,9 @@
             let pendingSamples = sampleRequests.filter(s => s.status === 'Pending' && !s.sampleSent).length;
             let qcPassed = qcResults.filter(q => q.result === 'Pass').length;
             let qcRejected = qcResults.filter(q => q.result === 'Reject').length;
-            let activePOs = purchaseOrders.filter(p => p.orderStatus !== 'Delivered').length;
+            let activePOs = purchaseOrders.filter(p => !p.delivered).length;
             let materialsCount = rawMaterialRequests.filter(r => r.status === 'Approved').length;
-            let completedOrders = purchaseOrders.filter(p => p.orderStatus === 'Delivered').length;
+            let completedOrders = purchaseOrders.filter(p => p.delivered).length;
             let totalPayments = payments.reduce((sum, p) => sum + p.amount, 0);
             
             document.getElementById('statSampleRequests').innerHTML = pendingSamples;
@@ -777,35 +866,28 @@
             });
         }
 
-        // Send Sample function
-        function sendSample(requestId, material) {
-            let today = new Date().toISOString().split('T')[0];
-            
-            // Update sample request
-            let reqIndex = sampleRequests.findIndex(s => s.id === requestId);
-            if(reqIndex !== -1) {
-                sampleRequests[reqIndex].sampleSent = true;
-                sampleRequests[reqIndex].status = 'Sample Sent';
-                
-                // Update localStorage
-                let allRequests = JSON.parse(localStorage.getItem('sampleRequests') || '[]');
-                let globalIndex = allRequests.findIndex(s => s.id === requestId);
-                if(globalIndex !== -1) {
-                    allRequests[globalIndex].sampleSent = true;
-                    allRequests[globalIndex].status = 'Sample Sent';
-                    localStorage.setItem('sampleRequests', JSON.stringify(allRequests));
+        // Send Sample function - persists to the real sample_requests table
+        // via api/supplier_samples.php so the Stock Clerk's QC screen (which
+        // reads that same table) actually sees it.
+        async function sendSample(requestId, material) {
+            try {
+                const response = await fetch('../../api/supplier_samples.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'send', request_id: requestId })
+                });
+                const result = await response.json();
+
+                if (!result.success) {
+                    alert('❌ ' + (result.message || 'Could not send sample. Please try again.'));
+                    return;
                 }
+            } catch (err) {
+                alert('❌ Could not reach the server. Please check your connection and try again.');
+                return;
             }
-            
-            // Add to sent samples
-            sentSamples.push({
-                requestId: requestId,
-                material: material,
-                sentDate: today,
-                status: 'Sample Sent - Awaiting QC'
-            });
-            saveSentSamples();
-            
+
+            await loadSupplierFlowData();
             alert(`✅ Sample for ${material} has been sent to Pearl Land!\nQC results will be updated within 2-3 days.`);
             renderPendingSampleRequests();
             renderSentSamples();
@@ -941,23 +1023,36 @@
         function renderPurchaseOrders() {
             let tbody = document.getElementById('purchaseOrdersBody');
             tbody.innerHTML = '';
+            if (purchaseOrders.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8">No purchase orders yet</td></tr>';
+                return;
+            }
             purchaseOrders.forEach(po => {
-                let paymentBadge = po.paymentStatus === 'Paid' ? 
-                    '<span class="badge badge-success">Paid</span>' : 
-                    (po.paymentStatus === 'Processing' ? '<span class="badge badge-info">Processing</span>' : '<span class="badge badge-warning">Pending</span>');
-                
-                let orderBadge = po.orderStatus === 'Delivered' ? 
-                    '<span class="badge badge-success">Delivered</span>' : 
-                    (po.orderStatus === 'Processing' ? '<span class="badge badge-info">Processing</span>' : '<span class="badge badge-warning">Pending</span>');
-                
+                let paymentBadge = po.paymentStatus === 'Paid' ?
+                    '<span class="badge badge-success">Paid</span>' :
+                    (po.paymentStatus === 'Overdue' ? '<span class="badge badge-danger">Overdue</span>' : '<span class="badge badge-warning">Pending</span>');
+
+                let orderBadge, actionCell;
+                if (po.delivered) {
+                    orderBadge = '<span class="badge badge-success">Delivered</span>';
+                    actionCell = '<span class="badge badge-success">✅ Done</span>';
+                } else if (po.accepted) {
+                    orderBadge = '<span class="badge badge-info">Accepted</span>';
+                    actionCell = `<button class="btn-success-custom btn-sm" onclick="deliverPurchaseOrder('${po.id}')">🚚 Mark as Delivered</button>`;
+                } else {
+                    orderBadge = '<span class="badge badge-warning">Awaiting Your Acceptance</span>';
+                    actionCell = `<button class="btn-success-custom btn-sm" onclick="acceptPurchaseOrder('${po.id}')">✅ Accept PO</button>`;
+                }
+
                 tbody.innerHTML += `<tr>
                     <td>${po.id}</td>
                     <td>${po.material}</td>
                     <td>${po.qty} kg</td>
-                    <td>${po.orderDate}</td>
+                    <td>${po.deliveryDate || '-'}</td>
                     <td>Rs. ${po.amount.toLocaleString()}</td>
                     <td>${paymentBadge}</td>
                     <td>${orderBadge}</td>
+                    <td>${actionCell}</td>
                 </tr>`;
             });
         }
@@ -992,7 +1087,7 @@
             renderDashboardStats();
         }
         
-        function showTab(tabName) {
+        async function showTab(tabName) {
             document.getElementById('dashboardView').style.display = 'none';
             document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
             document.getElementById(`tab-${tabName}`).classList.add('active');
@@ -1017,12 +1112,16 @@
             
             // Refresh data when tab is shown
             if(tabName === 'sample-requests') {
+                // Re-fetch so a request the Stock Clerk just created, or a QC
+                // result they just posted, shows up without a full reload.
+                await loadSupplierFlowData();
                 renderPendingSampleRequests();
                 renderSentSamples();
                 renderQCResults();
             } else if(tabName === 'materials') {
                 renderRawMaterials();
             } else if(tabName === 'orders') {
+                await loadPurchaseOrders();
                 renderPurchaseOrders();
             } else if(tabName === 'payments') {
                 renderPaymentHistory();
@@ -1030,8 +1129,9 @@
         }
         
         // Initialize
-        function init() {
-            loadSupplierFlowData();
+        async function init() {
+            await Promise.all([loadSupplierFlowData(), loadPurchaseOrders()]);
+            updateSupplierNameUI();
             renderLowStockTable();
             renderRawMaterials();
             renderPurchaseOrders();
@@ -1062,11 +1162,14 @@
         window.logoutUser = logoutUser;
 
         // Update supplier name in UI
-        document.getElementById('welcomeSupplier').innerText = currentSupplier.name;
-        document.getElementById('supplierProfileName').innerText = currentSupplier.name;
-        document.getElementById('supplierProfileEmail').innerText = currentSupplier.email;
-        document.getElementById('supplierName').innerText = currentSupplier.name;
-        
+        function updateSupplierNameUI() {
+            document.getElementById('welcomeSupplier').innerText = currentSupplier.name;
+            document.getElementById('supplierProfileName').innerText = currentSupplier.name;
+            document.getElementById('supplierProfileEmail').innerText = currentSupplier.email;
+            document.getElementById('supplierName').innerText = currentSupplier.name;
+        }
+        updateSupplierNameUI();
+
         init();
     </script>
 </body>

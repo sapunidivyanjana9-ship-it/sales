@@ -5,9 +5,10 @@ require_once __DIR__ . '/db_connect.php';
 
 function customer_spices(): array
 {
+    // Keep in sync with the same allow-list in api/register.php.
     return [
-        'Turmeric', 'Chili Powder', 'Black Pepper', 'Cinnamon', 'Cardamom',
-        'Coriander', 'Curry Powder', 'Cloves', 'Nutmeg', 'Vanilla'
+        'Turmeric', 'Chili', 'Cinnamon', 'Black Pepper', 'Cardamom',
+        'Cloves', 'Coriander', 'Curry Powder', 'Fenugreek'
     ];
 }
 

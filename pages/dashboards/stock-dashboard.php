@@ -81,7 +81,14 @@ function getActiveSuppliers() {
 }
 
 function isAuthenticated() {
-    return isset($_SESSION['user_id']) && !empty($_SESSION['user_id']);
+    // A session set by either login path (this page's own ?action=login
+    // against stock_clerk_db.users, or the main app's api/login.php against
+    // pearl_land_db.users) carries a role string - without this check, any
+    // logged-in account of any role (customer, supplier, account_clerk...)
+    // could fully use this dashboard, including creating GRNs and approving
+    // POs.
+    return isset($_SESSION['user_id']) && !empty($_SESSION['user_id'])
+        && in_array($_SESSION['role'] ?? '', ['stock_clerk', 'manager', 'admin'], true);
 }
 
 function requireAuth() {
@@ -392,7 +399,7 @@ function handleAPI() {
             
             $stmt = $conn->prepare("INSERT INTO qc_reports (sample_id, supplier, material, test_date, result, remarks, price, quality_score) 
                                     VALUES (?, ?, ?, CURDATE(), 'Pass', ?, ?, ?)");
-            $stmt->bind_param("sssdd", $data['sample_id'], $data['supplier'], $data['material'], 
+            $stmt->bind_param("ssssdd", $data['sample_id'], $data['supplier'], $data['material'],
                              $data['remarks'], $data['price'], $data['quality_score']);
             
             if ($stmt->execute()) {
@@ -627,7 +634,16 @@ function handleAPI() {
 }
 
 // ==================== HANDLE API REQUESTS ====================
-if (isset($_GET['action']) && $_GET['action'] !== 'login' && $_GET['action'] !== 'install') {
+// The login form itself submits via fetch('?action=login', {method:'POST', ...})
+// and expects the JSON handled by case 'login' inside handleAPI(). Excluding
+// 'login' outright meant that POST could never reach it - it fell through to
+// requireAuth() below, which redirected back to '?action=login', which hit
+// this same exclusion again: an infinite redirect loop that always looked
+// like a network error to the login form, so no one could ever log in.
+// A GET to '?action=login' (no submission yet) still needs to fall through
+// so the login page HTML renders below.
+if (isset($_GET['action']) && $_GET['action'] !== 'install'
+    && ($_GET['action'] !== 'login' || $_SERVER['REQUEST_METHOD'] === 'POST')) {
     handleAPI();
     exit;
 }
@@ -642,7 +658,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'install') {
 }
 
 // ==================== LOGIN PAGE ====================
-if (!isAuthenticated() && (!isset($_GET['action']) || $_GET['action'] !== 'login')) {
+// By this point action is neither 'install' nor a POST 'login' submission
+// (both handled and exited above), so a plain unauthenticated GET - with no
+// action, or a stray GET to '?action=login' - should just show the form.
+if (!isAuthenticated()) {
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -1897,6 +1916,9 @@ $rawMaterialsJSON = json_encode($rawMaterials);
 </body>
 </html>
 <?php
-// Close any open connections
-if (isset($conn)) $conn->close();
+// $conn is already closed above (right after the data fetch this page
+// renders from) - closing it again here threw "mysqli object is already
+// closed" on every single page load (PHP 8.1+ mysqli reports that as an
+// Error, not a warning), appending a fatal-error dump after the rendered
+// page's closing </html> tag.
 ?>

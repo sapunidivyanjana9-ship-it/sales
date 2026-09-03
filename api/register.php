@@ -16,9 +16,11 @@ function districts(): array
 
 function customer_spices(): array
 {
+    // Must match the checkbox `value`s on pages/auth/customer-registration.html
+    // exactly, or valid selections get silently dropped by the intersect below.
     return [
-        'Turmeric', 'Chili Powder', 'Black Pepper', 'Cinnamon', 'Cardamom',
-        'Coriander', 'Curry Powder', 'Cloves', 'Nutmeg', 'Vanilla'
+        'Turmeric', 'Chili', 'Cinnamon', 'Black Pepper', 'Cardamom',
+        'Cloves', 'Coriander', 'Curry Powder', 'Fenugreek'
     ];
 }
 
@@ -135,10 +137,8 @@ endpoint_guard(function (): void {
             : array_filter(array_map('trim', explode(',', (string)$spicePreferences)));
         $spicePreferences = array_values(array_intersect($spicePreferences, customer_spices()));
 
-        if (count($spicePreferences) === 0) {
-            $pdo->rollBack();
-            fail('Please select at least one spice preference', 422);
-        }
+        // Spice preferences are optional in the UI (no required marker, no
+        // client-side check), so don't block registration if none were picked.
 
         $requestCode = short_code('CUSTREQ');
         $extraData = json_encode([

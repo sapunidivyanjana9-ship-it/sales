@@ -497,7 +497,11 @@
         const roleCredentials = {
             manager: { username: 'manager', password: 'manager123', redirect: '../dashboards/managerdashboard.html' },
             admin: { username: 'admin', password: 'admin123', redirect: '../dashboards/admin-dashboard-embedded.html' },
-            clerk: { username: 'clerk', password: 'clerk123', redirect: '../dashboards/stockdashboard.html' },
+            // Points at the real, DB-backed dashboard (stock-dashboard.php),
+            // not the old localStorage-only stockdashboard.html mock -
+            // without a real session this just lands on that page's own
+            // login form (see its requireAuth()) rather than a dead end.
+            clerk: { username: 'clerk', password: 'clerk123', redirect: '../dashboards/stock-dashboard.php' },
             account: { username: 'account', password: 'account123', redirect: '../dashboards/accountdashboard.html' }
         };
 
@@ -508,7 +512,7 @@
             'wholesaler': '../dashboards/wholeseller.html',
             'manager': '../dashboards/managerdashboard.html',
             'admin': '../dashboards/admin-dashboard-embedded.html',
-            'clerk': '../dashboards/stockdashboard.html',
+            'clerk': '../dashboards/stock-dashboard.php',
             'account': '../dashboards/accountdashboard.html'
         };
 
@@ -656,7 +660,47 @@
                 }
             }
 
-            // ===== DEMO-ONLY ROLES (manager, admin, clerk, account) =====
+            // ===== MANAGER / STOCK CLERK / ACCOUNT CLERK - try the real
+            // backend account first; the demo credentials below still work
+            // as a fallback (manager's also matches the account
+            // api/login.php auto-creates on a fresh install). This UI's role
+            // slugs ('clerk', 'account') aren't the users.role values the
+            // backend actually stores ('stock_clerk', 'account_clerk') - map
+            // them, though api/login.php looks the account up by username
+            // alone, so this mostly documents the real role for the request.
+            // Without this, real seeded accounts (clerk_saman/account_sunil
+            // in database/pearl_land_db.sql) could never log in at all: this
+            // branch used to only run for 'manager', so every other backend
+            // role fell straight to the hardcoded demo-credential check,
+            // which rejects any username that isn't literally "clerk" or
+            // "account".
+            const backendRoles = { manager: 'manager', clerk: 'stock_clerk', account: 'account_clerk' };
+            if (backendRoles[role]) {
+                try {
+                    const response = await fetch('../../api/login.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password, role: backendRoles[role] })
+                    });
+                    const result = await response.json();
+
+                    if (result.success) {
+                        localStorage.setItem('user_session', JSON.stringify(result.user));
+                        successMsgDiv.textContent = '✅ Login successful! Redirecting...';
+                        successMsgDiv.style.display = 'block';
+                        setTimeout(() => {
+                            window.location.href = result.redirect_page || roleRedirects[role] || 'index.html';
+                        }, 1000);
+                        return false;
+                    }
+                    // Not a real account, or wrong password against one - fall
+                    // through to the demo credential check below.
+                } catch (e) {
+                    // API unreachable - fall through to the demo credential check below.
+                }
+            }
+
+            // ===== DEMO-ONLY ROLES (manager fallback, admin, clerk, account) =====
             const validCred = roleCredentials[role];
             if (!validCred) {
                 showError('Role configuration error.');
