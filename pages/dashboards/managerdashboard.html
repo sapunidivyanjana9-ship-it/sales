@@ -1864,6 +1864,59 @@
         // Wholesaler Orders
         let wholesalerOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || [];
 
+        // Every backend call on this page runs against the real PHP session,
+        // not the localStorage flag the sidebar/greeting are drawn from - so
+        // a manager can look logged in (localStorage still has last login's
+        // user_session) while the server session has actually expired or was
+        // never established for this tab. Previously every loader below just
+        // logged that to the console and quietly rendered empty/zeroed
+        // sections - a manager would see "0 Pending POs" with no indication
+        // anything was wrong, easily mistaken for "nothing to approve" (see
+        // the PO-approval bug report this was written to fix). Call this
+        // once per page load on the first 401/403 hit: it shows a visible
+        // banner and sends the manager back to a real login instead of
+        // leaving them staring at a dashboard that looks fine but isn't.
+        let authFailureHandled = false;
+        function handleAuthFailure() {
+            if (authFailureHandled) return;
+            authFailureHandled = true;
+            try {
+                localStorage.removeItem('user_session');
+                localStorage.removeItem('supplier_session');
+            } catch (e) { /* ignore */ }
+            const banner = document.createElement('div');
+            banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+                'background:#c0392b;color:#fff;padding:14px 20px;text-align:center;' +
+                'font:600 15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;' +
+                'box-shadow:0 2px 10px rgba(0,0,0,.3);';
+            banner.textContent = '⚠️ Your session has expired or you are not logged in as a manager. Redirecting to login…';
+            document.body.prepend(banner);
+            setTimeout(() => { window.location.href = '../auth/login.html'; }, 2200);
+        }
+
+        // A single 401/403 can be a one-off blip rather than a real logout -
+        // e.g. this same browser has another Pearl Land tab open under a
+        // different role/session, and something there transiently touched
+        // the shared cookie. Re-check a beat later before showing the
+        // "you're logged out" banner; only act if the failure is still
+        // there. Callers should fire this instead of handleAuthFailure()
+        // directly whenever a 401/403 comes from a background poll rather
+        // than a user-initiated action.
+        let authRecheckInFlight = false;
+        function confirmAuthFailure() {
+            if (authFailureHandled || authRecheckInFlight) return;
+            authRecheckInFlight = true;
+            setTimeout(async () => {
+                authRecheckInFlight = false;
+                try {
+                    const r = await fetch('../../api/manager_purchase_orders.php');
+                    if (r.status === 401 || r.status === 403) {
+                        handleAuthFailure();
+                    }
+                } catch (e) { /* network hiccup, not an auth failure - ignore */ }
+            }, 1500);
+        }
+
         // Sample Requests + QC Results - loaded from the real backend
         // (api/manager_samples.php), which reads the same stock_clerk_db
         // tables the Stock Clerk's dashboard writes to. See loadSampleData().
@@ -1879,6 +1932,9 @@
                     console.error('Failed to load sample requests:', result.message);
                     sampleRequests = [];
                     qcReports = [];
+                    if (response.status === 401 || response.status === 403) {
+                        confirmAuthFailure();
+                    }
                     return;
                 }
 
@@ -1924,6 +1980,9 @@
                 const response = await fetch('../../api/get_suppliers.php');
                 const result = await response.json();
                 registeredSuppliers = result.success ? (result.suppliers || []) : [];
+                if (!result.success && (response.status === 401 || response.status === 403)) {
+                    confirmAuthFailure();
+                }
             } catch (err) {
                 console.error('Could not reach supplier directory service:', err);
                 registeredSuppliers = [];
@@ -2479,6 +2538,9 @@
                 if (!result.success) {
                     console.error('Failed to load purchase orders:', result.message);
                     purchaseOrders = [];
+                    if (response.status === 401 || response.status === 403) {
+                        confirmAuthFailure();
+                    }
                     return;
                 }
 
@@ -2566,7 +2628,9 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
-                return await response.json();
+                const result = await response.json();
+                result.status = response.status;
+                return result;
             } catch (err) {
                 return { success: false, message: 'Could not reach the server. Please check your connection and try again.' };
             }
@@ -2578,6 +2642,7 @@
 
             const result = await callManagerPOAction({ action: 'approve', po_id: id });
             if (!result.success) {
+                if (result.status === 401 || result.status === 403) { handleAuthFailure(); return; }
                 alert('❌ ' + (result.message || 'Could not approve this PO. Please try again.'));
                 return;
             }
@@ -2593,6 +2658,7 @@
 
             const result = await callManagerPOAction({ action: 'reject', po_id: id });
             if (!result.success) {
+                if (result.status === 401 || result.status === 403) { handleAuthFailure(); return; }
                 alert('❌ ' + (result.message || 'Could not reject this PO. Please try again.'));
                 return;
             }
@@ -2616,6 +2682,7 @@
 
             const result = await callManagerPOAction({ action: 'update_payment_status', po_id: id, payment_status: newStatus });
             if (!result.success) {
+                if (result.status === 401 || result.status === 403) { handleAuthFailure(); return; }
                 alert('❌ ' + (result.message || 'Could not update payment status. Please try again.'));
                 return;
             }
@@ -3412,14 +3479,23 @@
         });
 
         // ===================== LOGOUT - REDIRECT TO LOGIN PAGE =====================
-        // ✅ FIXED: Logout button redirects to login.html
+        // This used to only clear localStorage and redirect - the real PHP
+        // session (the thing every api/*.php call actually checks via
+        // require_roles()) was never touched, so it stayed fully
+        // authenticated. The dashboard itself has no login guard of its own
+        // (the sidebar name/email are static HTML, not read from any
+        // session), so hitting Back after "logging out" landed right back on
+        // a fully working, still-authenticated dashboard - looking like
+        // logout hadn't done anything, or took several Back presses to
+        // escape. Calling logout.php first destroys that session server-side
+        // before we leave the page.
         document.addEventListener('DOMContentLoaded', function() {
             const logoutBtn = document.getElementById('logoutBtn');
             if (logoutBtn) {
                 // Remove old event listeners by cloning
                 const newBtn = logoutBtn.cloneNode(true);
                 logoutBtn.parentNode.replaceChild(newBtn, logoutBtn);
-                
+
                 newBtn.addEventListener('click', function(e) {
                     e.preventDefault();
                     if (confirm('Do you want to logout?')) {
@@ -3430,8 +3506,12 @@
                         } catch (err) {
                             console.error('Failed to clear session storage:', err);
                         }
-                        // Redirect to login page
-                        window.location.href = '../auth/login.html';
+                        // Destroy the real PHP session too - without this,
+                        // the session stays authenticated and pressing Back
+                        // returns to a fully working dashboard.
+                        fetch('../../logout.php', { headers: { 'Accept': 'application/json' } }).finally(() => {
+                            window.location.href = '../auth/login.html';
+                        });
                     }
                 });
                 console.log('✅ Logout button fixed - redirects to login.html');
@@ -3447,7 +3527,9 @@
                 } catch (err) {
                     console.error('Failed to clear session storage:', err);
                 }
-                window.location.href = '../auth/login.html';
+                fetch('../../logout.php', { headers: { 'Accept': 'application/json' } }).finally(() => {
+                    window.location.href = '../auth/login.html';
+                });
             }
         }
 

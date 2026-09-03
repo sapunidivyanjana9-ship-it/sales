@@ -981,7 +981,14 @@
                 } catch (e) {
                     console.error('Failed to clear session storage:', e);
                 }
-                window.location.href = '../auth/login.html';
+                // This used to only clear localStorage - the real PHP session
+                // (what every api/*.php call actually checks) was never
+                // destroyed, so it stayed authenticated and pressing Back
+                // after "logging out" landed right back on a fully working
+                // dashboard. logout.php destroys that session server-side.
+                fetch('../../logout.php', { headers: { 'Accept': 'application/json' } }).finally(() => {
+                    window.location.href = '../auth/login.html';
+                });
             }
         }
         window.logoutUser = logoutUser;
