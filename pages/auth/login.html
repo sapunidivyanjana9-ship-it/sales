@@ -514,6 +514,16 @@
         };
 
         // ========== ROLE REDIRECTS ==========
+        // Keyed by both this page's front-end role slugs ('clerk', 'account')
+        // AND the backend's actual users.role values ('stock_clerk',
+        // 'account_clerk') - initializePage() below looks up a *stored*
+        // session's role (which came from a real backend login and so holds
+        // the backend value), while handleLogin() looks up the dropdown's
+        // slug. Without both, a stock clerk who logs in for real, then later
+        // reopens this page with that session still in localStorage, hit
+        // roleRedirects['stock_clerk'] === undefined -> fell through to the
+        // bare 'index.html' fallback -> resolved relative to this page's own
+        // folder as pages/auth/index.html, a 404 ("no file exists").
         const roleRedirects = {
             'customer': '../customer/customer.html',
             'supplier': '../dashboards/supplierdashboard.html',
@@ -521,7 +531,9 @@
             'manager': '../dashboards/managerdashboard.html',
             'admin': '../dashboards/admin-dashboard-embedded.html',
             'clerk': '../dashboards/stock-dashboard.php',
-            'account': '../dashboards/accountdashboard.html'
+            'stock_clerk': '../dashboards/stock-dashboard.php',
+            'account': '../dashboards/accountdashboard.html',
+            'account_clerk': '../dashboards/accountdashboard.html'
         };
 
         // ========== UPDATE UI ON ROLE CHANGE ==========
@@ -641,7 +653,7 @@
                         successMsgDiv.style.display = 'block';
 
                         setTimeout(() => {
-                            window.location.href = result.redirect_page || roleRedirects[role] || 'index.html';
+                            window.location.href = result.redirect_page || roleRedirects[role] || '../../index.html';
                         }, 1000);
                         return false;
                     } else {
@@ -697,7 +709,7 @@
                         successMsgDiv.textContent = '✅ Login successful! Redirecting...';
                         successMsgDiv.style.display = 'block';
                         setTimeout(() => {
-                            window.location.href = result.redirect_page || roleRedirects[role] || 'index.html';
+                            window.location.href = result.redirect_page || roleRedirects[role] || '../../index.html';
                         }, 1000);
                         return false;
                     }
@@ -831,7 +843,7 @@
                     successMsgDiv.style.display = 'block';
 
                     setTimeout(() => {
-                        window.location.href = roleRedirects[role] || 'index.html';
+                        window.location.href = roleRedirects[role] || '../../index.html';
                     }, 1000);
                     return true;
                 } else if (status === 'rejected') {
@@ -864,7 +876,7 @@
             let session = JSON.parse(localStorage.getItem('user_session') || 'null');
             if (session) {
                 // Redirect to appropriate dashboard
-                let redirect = roleRedirects[session.role] || 'index.html';
+                let redirect = roleRedirects[session.role] || '../../index.html';
                 window.location.href = redirect;
             }
         }
