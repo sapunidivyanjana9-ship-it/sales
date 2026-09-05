@@ -3,10 +3,11 @@
 // Authentication and authorization helper functions.
 // Uses the Database singleton class for all DB operations.
 
-require_once __DIR__ . '/../classes/Database.php';
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-// Get the database connection from the singleton
-$pdo = Database::getInstance()->getConnection();
+require_once __DIR__ . '/../classes/Database.php';
 
 function isLoggedIn() {
     return isset($_SESSION['user_id']);

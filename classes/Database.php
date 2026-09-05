@@ -66,11 +66,6 @@ class Database {
         } catch (PDOException $e) {
             die("❌ Database connection failed: " . $e->getMessage());
         }
-
-        // Start session if not already started
-        if (session_status() === PHP_SESSION_NONE) {
-            session_start();
-        }
     }
 
     // Prevent cloning

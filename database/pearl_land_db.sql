@@ -984,31 +984,31 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- Manager
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('manager_kamal', 'manager123', 'manager', 'Kamal Perera', 'kamal@pearlland.com', '071-0000001', 'No 308/4, Temple Road', 'Horana', 'active', 'managerdashboard.html');
+('manager_kamal', '$2y$10$43l.KPMfT9Ooh64BhA9Ar.YNKmoAXk0NWt0kg46yhrrbNhgr553Fu', 'manager', 'Kamal Perera', 'kamal@pearlland.com', '071-0000001', 'No 308/4, Temple Road', 'Horana', 'active', 'managerdashboard.html');
 
 -- Admin
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('admin_nimal', 'admin123', 'admin', 'Nimal Fernando', 'nimal@pearlland.com', '071-0000002', 'No 301/2, Medikele', 'Horana', 'active', 'admin-dashboard.html');
+('admin_nimal', '$2y$10$BT2YduPwqyOePlV5Pzr6ueOQypskheTa9lYvUme1zcfMTlTyVprs6', 'admin', 'Nimal Fernando', 'nimal@pearlland.com', '071-0000002', 'No 301/2, Medikele', 'Horana', 'active', 'admin-dashboard.html');
 
 -- Stock Clerk
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('clerk_saman', 'clerk123', 'stock_clerk', 'Saman Rathnayake', 'saman@pearlland.com', '071-0000003', 'No 308/4, Temple Road', 'Horana', 'active', 'stockdashboard.html');
+('clerk_saman', '$2y$10$xmG.podjhnjG7mhqk3Ime.wIZBsb4nkbRI31EZ5Ylj3CoEshMdI/q', 'stock_clerk', 'Saman Rathnayake', 'saman@pearlland.com', '071-0000003', 'No 308/4, Temple Road', 'Horana', 'active', 'stockdashboard.html');
 
 -- Account Clerk
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('account_sunil', 'account123', 'account_clerk', 'Sunil Wickramasinghe', 'sunil@pearlland.com', '071-0000004', 'No 308/4, Temple Road', 'Horana', 'active', 'accountdashboard.html');
+('account_sunil', '$2y$10$x5jsjoKV/sCbUNUJI.oCMeO2bEAgU9UAZ5R/XR4Zx5imX2NHmbHMW', 'account_clerk', 'Sunil Wickramasinghe', 'sunil@pearlland.com', '071-0000004', 'No 308/4, Temple Road', 'Horana', 'active', 'accountdashboard.html');
 
 -- Sample Customer (Already approved/active)
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('saman_cust', 'customer123', 'customer', 'Saman Perera', 'saman@gmail.com', '071-1234567', 'No 123, Galle Road', 'Colombo', 'active', 'customer.html');
+('saman_cust', '$2y$10$F7eTcnlFpSASZkh6BRsfPO2/kJU3Ngm6Rt8gsT3kCIKjiowO9wSVm', 'customer', 'Saman Perera', 'saman@gmail.com', '071-1234567', 'No 123, Galle Road', 'Colombo', 'active', 'customer.html');
 
 -- Sample Wholesaler (Already approved/active)
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('nimal_wholesale', 'wholesaler123', 'wholesaler', 'Nimal Perera', 'nimal@wholesale.com', '077-4567890', 'Wholesale Lane', 'Colombo', 'active', 'wholeseller.html');
+('nimal_wholesale', '$2y$10$RSFkPeRVjwtjuJLIV4g.YuJS9Cs/wswoMPE2ZnMAgiigSNxOUt9B6', 'wholesaler', 'Nimal Perera', 'nimal@wholesale.com', '077-4567890', 'Wholesale Lane', 'Colombo', 'active', 'wholeseller.html');
 
 -- Sample Supplier (User account)
 INSERT IGNORE INTO users (username, password, role, full_name, email, phone, address, city, status, redirect_page) VALUES
-('lanka_supplier', 'supplier123', 'supplier', 'Lanka Spices', 'lanka@spices.com', '071-2223333', 'Farm Road', 'Matale', 'active', 'supllierdashboard.html');
+('lanka_supplier', '$2y$10$eRP7mAv7dPh.AxE/CcXQR.BGpjbWltsr10EbX2rPDikU6msW1dWUe', 'supplier', 'Lanka Spices', 'lanka@spices.com', '071-2223333', 'Farm Road', 'Matale', 'active', 'supplierdashboard.html');
 
 -- ======================================================
 -- INSERT INTO DETAIL TABLES (Linked to users)

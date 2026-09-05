@@ -494,23 +494,12 @@
         };
 
         // ========== DEMO CREDENTIALS ==========
+        // These MUST match the seeded usernames in database/pearl_land_db.sql
         const roleCredentials = {
-            manager: { username: 'manager', password: 'manager123', redirect: '../dashboards/managerdashboard.html' },
-            admin: { username: 'admin', password: 'admin123', redirect: '../dashboards/admin-dashboard-embedded.html' },
-            // Points at the real, DB-backed dashboard (stock-dashboard.php),
-            // which requires an actual PHP session (see its requireAuth()).
-            // The username below must match a real seeded stock_clerk
-            // account (database/pearl_land_db.sql) - the backend-login
-            // attempt just below (backendRoles) tries this pair against
-            // api/login.php first and only falls through to the
-            // localStorage-only demo path on failure. A username of plain
-            // "clerk" doesn't exist as a user, so that backend call always
-            // failed, no real session ever got set, and landing on
-            // stock-dashboard.php with no session just bounced straight to
-            // its own separate login form - clerk_saman is the actual
-            // seeded account, so this now logs in for real.
+            manager: { username: 'manager_kamal', password: 'manager123', redirect: '../dashboards/managerdashboard.html' },
+            admin: { username: 'admin_nimal', password: 'admin123', redirect: '../dashboards/admin-dashboard-embedded.html' },
             clerk: { username: 'clerk_saman', password: 'clerk123', redirect: '../dashboards/stock-dashboard.php' },
-            account: { username: 'account', password: 'account123', redirect: '../dashboards/accountdashboard.html' }
+            account: { username: 'account_sunil', password: 'account123', redirect: '../dashboards/accountdashboard.html' }
         };
 
         // ========== ROLE REDIRECTS ==========
@@ -642,6 +631,7 @@
                     const response = await fetch('../../api/login.php', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
                         body: JSON.stringify({ username, password, role })
                     });
 
@@ -700,6 +690,7 @@
                     const response = await fetch('../../api/login.php', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
                         body: JSON.stringify({ username, password, role: backendRoles[role] })
                     });
                     const result = await response.json();
