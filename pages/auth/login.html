@@ -495,6 +495,9 @@
 
         // ========== DEMO CREDENTIALS ==========
         // These MUST match the seeded usernames in database/pearl_land_db.sql
+        // Convenience autofill only - these are real accounts seeded in
+        // database/pearl_land_db.sql, and they are verified by the server
+        // like any other login. Nothing here grants access on its own.
         const roleCredentials = {
             manager: { username: 'manager_kamal', password: 'manager123', redirect: '../dashboards/managerdashboard.html' },
             admin: { username: 'admin_nimal', password: 'admin123', redirect: '../dashboards/admin-dashboard-embedded.html' },
@@ -638,7 +641,7 @@
                     const result = await response.json();
 
                     if (result.success) {
-                        localStorage.setItem('user_session', JSON.stringify(result.user));
+                        cacheSession(result.user);
                         successMsgDiv.textContent = '✅ Login successful! Redirecting...';
                         successMsgDiv.style.display = 'block';
 
@@ -646,26 +649,19 @@
                             window.location.href = result.redirect_page || roleRedirects[role] || '../../index.html';
                         }, 1000);
                         return false;
-                    } else {
-                        // If API fails, try localStorage
-                        const loginSuccess = checkLocalStorageLogin(username, password, role);
-                        if (loginSuccess) {
-                            return false;
-                        }
-                        showError(result.message || 'Invalid username or password. Please register first.');
-                        loginBtn.disabled = false;
-                        loginBtn.textContent = '🔐 Login as ' + roleDisplayMap[role];
-                        return false;
                     }
+
+                    // The server is the only authority on whether these
+                    // credentials are good. There is no local fallback: a
+                    // "login" that only wrote to localStorage left the PHP
+                    // session unset, so the dashboard it redirected to could
+                    // not load a single api/*.php endpoint.
+                    showError(result.message || 'Invalid username or password.');
+                    resetLoginButton(role);
+                    return false;
                 } catch (e) {
-                    // Offline fallback - check localStorage
-                    const loginSuccess = checkLocalStorageLogin(username, password, role);
-                    if (loginSuccess) {
-                        return false;
-                    }
-                    showError('Invalid username or password. Please register first.');
-                    loginBtn.disabled = false;
-                    loginBtn.textContent = '🔐 Login as ' + roleDisplayMap[role];
+                    showError('Could not reach the server. Please check your connection and try again.');
+                    resetLoginButton(role);
                     return false;
                 }
             }
@@ -696,7 +692,7 @@
                     const result = await response.json();
 
                     if (result.success) {
-                        localStorage.setItem('user_session', JSON.stringify(result.user));
+                        cacheSession(result.user);
                         successMsgDiv.textContent = '✅ Login successful! Redirecting...';
                         successMsgDiv.style.display = 'block';
                         setTimeout(() => {
@@ -704,149 +700,49 @@
                         }, 1000);
                         return false;
                     }
-                    // Not a real account, or wrong password against one - fall
-                    // through to the demo credential check below.
+
+                    showError(result.message || 'Invalid username or password.');
+                    resetLoginButton(role);
+                    return false;
                 } catch (e) {
-                    // API unreachable - fall through to the demo credential check below.
+                    showError('Could not reach the server. Please check your connection and try again.');
+                    resetLoginButton(role);
+                    return false;
                 }
             }
 
-            // ===== DEMO-ONLY ROLES (manager fallback, admin, clerk, account) =====
-            const validCred = roleCredentials[role];
-            if (!validCred) {
-                showError('Role configuration error.');
-                loginBtn.disabled = false;
-                loginBtn.textContent = '🔐 Login as ' + roleDisplayMap[role];
-                return false;
-            }
-
-            if (username === validCred.username && password === validCred.password) {
-                const demoUser = {
-                    username: username,
-                    role: role,
-                    full_name: roleDisplayMap[role],
-                    email: username + '@pelcomo.lk'
-                };
-                localStorage.setItem('user_session', JSON.stringify(demoUser));
-                
-                successMsgDiv.textContent = '✅ Login successful!';
-                successMsgDiv.style.display = 'block';
-                setTimeout(() => {
-                    window.location.href = validCred.redirect;
-                }, 1000);
-            } else {
-                showError(`❌ Invalid credentials for ${roleDisplayMap[role]}.`);
-                loginBtn.disabled = false;
-                loginBtn.textContent = '🔐 Login as ' + roleDisplayMap[role];
-            }
+            // Every role above returns from its own branch. Anything that
+            // reaches here has no backend mapping at all, which is a config
+            // bug rather than a bad password.
+            //
+            // The hardcoded demo credentials that used to live here
+            // (manager123 / admin123 / clerk123 / account123) were a second
+            // way in that never touched the server: typing them after a
+            // failed real login dropped you on a dashboard with no PHP
+            // session, where every panel silently failed to load. They are
+            // not needed - each one is a real seeded account in
+            // database/pearl_land_db.sql, so they still work, through
+            // api/login.php like any other account.
+            showError('Role configuration error.');
+            resetLoginButton(role);
             return false;
         }
 
-        // ===== CHECK LOCALSTORAGE LOGIN (Supports Supplier from ALL Sources) =====
-        function checkLocalStorageLogin(username, password, role) {
-            // Load all data sources
-            let registeredUsers = JSON.parse(localStorage.getItem('registered_users')) || [];
-            let managerSuppliers = JSON.parse(localStorage.getItem('managerSuppliers')) || [];
-            let pendingRegistrations = JSON.parse(localStorage.getItem('pending_registrations')) || [];
-            
-            console.log('🔍 Searching for:', username);
-            console.log('📋 Registered Users:', registeredUsers.length);
-            console.log('📋 Manager Suppliers:', managerSuppliers.length);
-            console.log('📋 Pending Registrations:', pendingRegistrations.length);
+        function resetLoginButton(role) {
+            const loginBtn = document.getElementById('loginBtn');
+            loginBtn.disabled = false;
+            loginBtn.textContent = '🔐 Login as ' + (roleDisplayMap[role] || 'User');
+        }
 
-            let user = null;
-            let source = '';
-
-            // 1. Check registered_users
-            user = registeredUsers.find(u => 
-                u.username && u.username.toLowerCase() === username.toLowerCase() &&
-                u.password === password &&
-                (u.role === role || (role === 'supplier' && u.role === 'supplier'))
-            );
-            if (user) {
-                source = 'registered_users';
-                console.log('✅ Found in registered_users');
+        // A convenience copy for greetings/profile prefill only - never proof
+        // of being logged in. The PHP session cookie is the credential, and
+        // every dashboard re-checks it against api/session.php.
+        function cacheSession(user) {
+            try {
+                localStorage.setItem('user_session', JSON.stringify(user));
+            } catch (e) {
+                // Private mode / storage disabled - the server session still governs.
             }
-
-            // 2. If not found, check managerSuppliers (for suppliers)
-            if (!user && role === 'supplier') {
-                // A supplier record only authenticates against its own stored
-                // password. Records synced from the manager/stock dashboards carry
-                // no password at all - those must fall through to registered_users
-                // rather than be granted a shared default credential.
-                let supplier = managerSuppliers.find(s => 
-                    s.username && s.username.toLowerCase() === username.toLowerCase() &&
-                    typeof s.password === 'string' && s.password.length > 0 &&
-                    s.password === password
-                );
-                if (supplier) {
-                    user = {
-                        username: supplier.username,
-                        full_name: supplier.contact || supplier.company,
-                        company_name: supplier.company,
-                        email: supplier.email,
-                        role: 'supplier',
-                        status: supplier.status === 'Active' ? 'approved' : 'pending'
-                    };
-                    source = 'managerSuppliers';
-                    console.log('✅ Found in managerSuppliers');
-                }
-            }
-
-            // 3. If still not found, check pendingRegistrations
-            if (!user && role === 'supplier') {
-                let pending = pendingRegistrations.find(p => 
-                    p.username && p.username.toLowerCase() === username.toLowerCase() &&
-                    p.password === password
-                );
-                if (pending) {
-                    user = {
-                        username: pending.username,
-                        password: pending.password,
-                        full_name: pending.full_name || pending.contact_person,
-                        company_name: pending.company_name || pending.company,
-                        email: pending.email,
-                        role: 'supplier',
-                        status: 'pending'
-                    };
-                    source = 'pendingRegistrations';
-                    console.log('✅ Found in pendingRegistrations');
-                }
-            }
-
-            // If user found, proceed with login
-            if (user) {
-                // Check status for supplier
-                let status = user.status || user.account_status || 'pending';
-                
-                if (status === 'approved' || status === 'active') {
-                    // Save session
-                    localStorage.setItem('user_session', JSON.stringify({
-                        username: user.username,
-                        role: role,
-                        full_name: user.full_name || user.company_name || user.username,
-                        email: user.email || '',
-                        company: user.company_name || '',
-                        status: 'approved'
-                    }));
-
-                    successMsgDiv.textContent = '✅ Login successful! Redirecting...';
-                    successMsgDiv.style.display = 'block';
-
-                    setTimeout(() => {
-                        window.location.href = roleRedirects[role] || '../../index.html';
-                    }, 1000);
-                    return true;
-                } else if (status === 'rejected') {
-                    showError('❌ Your registration has been rejected. Reason: ' + (user.rejection_reason || 'Not specified'));
-                    return false;
-                } else {
-                    showError('⏳ Your registration is pending Manager approval. Please wait.');
-                    return false;
-                }
-            }
-
-            return false;
         }
 
         // ========== SHOW ERROR ==========
@@ -859,16 +755,43 @@
         }
 
         // ========== INITIALIZE ==========
-        function initializePage() {
+        // "Already logged in?" is a question only the server can answer. This
+        // used to redirect on the mere presence of a localStorage
+        // user_session, which survives logout and session expiry - so after
+        // logging out you were bounced straight back onto a dashboard that
+        // then had to bounce you here again, and a stale entry could send you
+        // to a dashboard you were no longer entitled to see.
+        let sessionCheckInFlight = false;
+
+        async function initializePage() {
             const initialRole = roleDropdown.value;
             updateRoleSelection(initialRole);
-            
-            // Check if already logged in
-            let session = JSON.parse(localStorage.getItem('user_session') || 'null');
-            if (session) {
-                // Redirect to appropriate dashboard
-                let redirect = roleRedirects[session.role] || '../../index.html';
-                window.location.href = redirect;
+
+            if (sessionCheckInFlight) return;
+            sessionCheckInFlight = true;
+
+            try {
+                const response = await fetch('../../api/session.php', { credentials: 'same-origin' });
+                const result = await response.json();
+
+                if (result.success && result.user) {
+                    cacheSession(result.user);
+                    window.location.href = roleRedirects[result.user.role] || '../../index.html';
+                    return;
+                }
+
+                // No live session - drop the stale copy so nothing downstream
+                // mistakes it for being logged in.
+                try {
+                    localStorage.removeItem('user_session');
+                    localStorage.removeItem('supplier_session');
+                } catch (e) { /* ignore */ }
+            } catch (e) {
+                // Server unreachable: stay on the login form rather than
+                // redirecting somewhere that cannot work either.
+                console.warn('Session check failed:', e);
+            } finally {
+                sessionCheckInFlight = false;
             }
         }
 

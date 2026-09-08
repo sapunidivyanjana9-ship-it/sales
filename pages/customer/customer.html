@@ -1704,15 +1704,28 @@
         // ========== SESSION MANAGEMENT ==========
         // ===================================================
 
-        function checkSession() {
+        // The PHP session is the authority - it is what every api/*.php call
+        // checks. The localStorage copy survives logout and goes stale, so it
+        // is only used to prefill the profile form while the real session
+        // is confirmed.
+        let serverSession = null;
+
+        async function checkSession() {
             try {
-                const session = JSON.parse(localStorage.getItem('user_session'));
-                if (!session || session.role !== 'customer') {
+                const r = await fetch('../../api/session.php', { credentials: 'same-origin' });
+                const data = await r.json();
+                if (!data.success || !data.user || data.user.role !== 'customer') {
                     window.location.href = '../auth/login.html';
                     return null;
                 }
-                return session;
+
+                serverSession = data.user;
+                try {
+                    localStorage.setItem('user_session', JSON.stringify(Object.assign({ role: data.user.role }, data.user)));
+                } catch (e) { /* private mode - the server session still governs */ }
+                return data.user;
             } catch (e) {
+                console.error('Session check failed:', e);
                 window.location.href = '../auth/login.html';
                 return null;
             }
@@ -1727,7 +1740,10 @@
                 } catch (e) {
                     console.error('Failed to clear session storage:', e);
                 }
-                window.location.href = '../auth/login.html';
+                // Destroy the PHP session too - clearing localStorage alone
+                // leaves the server session fully authenticated.
+                fetch('../../logout.php', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+                    .finally(() => { window.location.href = '../auth/login.html'; });
             }
         }
 
@@ -1970,17 +1986,13 @@
                     sendOrderRejectedNotification(order);
                     logEmailNotification(order.id, window.customerEmail, 'rejected');
 
-                    showToast(`❌ Order ${order.id} has been REJECTED by Manager!`, 'error');
+                    showToast(`❌ Order ${order.id} has been REJECTED by Manager!` +
+                              (order.rejectionReason ? ' Reason: ' + order.rejectionReason : ''), 'error');
 
-                    let messages = JSON.parse(localStorage.getItem('userMessages') || '[]');
-                    messages.push({
-                        date: new Date().toISOString().split('T')[0],
-                        orderId: order.id,
-                        message: '❌ Your order has been REJECTED by the manager. Please contact support for more information.',
-                        recipientType: 'Customer',
-                        type: 'rejection'
-                    });
-                    localStorage.setItem('userMessages', JSON.stringify(messages));
+                    // The message itself is written server-side by
+                    // api/update_order_status.php and read back through
+                    // api/get_notifications.php - just refresh the panel.
+                    notifiedRejections.add(order.id);
                     showUserMessages();
                 }
             });
@@ -2009,22 +2021,45 @@
         // ========== PRODUCTS ==========
         // ===================================================
 
-        let products = [
-            { id: 1, name: 'Turmeric Powder', category: 'Spice', pricePerKg: 500, image: 'image/turmeric.jpeg',
-                stock: 100, discount: 0 },
-            { id: 2, name: 'Chili Powder', category: 'Spice', pricePerKg: 400, image: 'image/Chili.jpeg', stock: 50,
-                discount: 0 },
-            { id: 3, name: 'Coriander Powder', category: 'Spice', pricePerKg: 450, image: 'image/Coriander.jpeg',
-                stock: 75, discount: 0 },
-            { id: 4, name: 'Pepper Powder', category: 'Spice', pricePerKg: 600, image: 'image/Pepperp.jpeg', stock: 30,
-                discount: 15 },
-            { id: 5, name: 'Cinnamon Powder', category: 'Spice', pricePerKg: 800, image: 'image/cinnomon.jpeg',
-                stock: 40, discount: 20 },
-            { id: 6, name: 'Cardamom', category: 'Whole Spice', pricePerKg: 2000, image: 'image/cardamom.jpeg',
-                stock: 20, discount: 10 },
-            { id: 7, name: 'Curry Powder', category: 'Blend', pricePerKg: 350, image: 'image/currypowder.jpeg',
-                stock: 150, discount: 0 }
-        ];
+        // The real catalogue (api/get_products.php) - the same rows the
+        // manager maintains and create_order.php reserves stock from. A
+        // hardcoded list here meant product ids, prices and stock levels on
+        // this page had nothing to do with what the server would accept.
+        let products = [];
+
+        function productImageFor(name) {
+            const key = (name || '').toLowerCase();
+            if (key.includes('turmeric')) return 'image/turmeric.jpeg';
+            if (key.includes('chili')) return 'image/Chili.jpeg';
+            if (key.includes('coriander')) return 'image/Coriander.jpeg';
+            if (key.includes('pepper')) return 'image/Pepperp.jpeg';
+            if (key.includes('cinnamon')) return 'image/cinnomon.jpeg';
+            if (key.includes('cardamom')) return 'image/cardamom.jpeg';
+            if (key.includes('curry')) return 'image/currypowder.jpeg';
+            return 'image/spice.jpeg';
+        }
+
+        async function loadProductsFromServer() {
+            try {
+                const r = await fetch('../../api/get_products.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleSessionExpired(); return; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_products.php:', data.message); return; }
+
+                products = (data.products || []).map(p => ({
+                    id: Number(p.product_id),
+                    name: p.name,
+                    category: p.category || 'Spice',
+                    pricePerKg: Number(p.price),
+                    image: p.image_path || productImageFor(p.name),
+                    stock: Number(p.current_stock),
+                    discount: 0
+                }));
+                loadProducts();
+            } catch (e) {
+                console.error('Failed to load products:', e);
+            }
+        }
 
         // ===================================================
         // ========== SHIPPING ZONES ==========
@@ -2145,109 +2180,97 @@
         // ========== SYNC ENGINE ==========
         // ===================================================
 
-        function syncAllStatuses() {
-            try {
-                let managerOrders = JSON.parse(localStorage.getItem('managerOrders') || '[]');
-                managerOrders.forEach(mo => {
-                    let o = orders.find(x => x.id === mo.id);
-                    if (o) {
-                        if (mo.status) o.status = mo.status;
-                        if (mo.deliveryStatus) o.deliveryStatus = mo.deliveryStatus;
-                        if (mo.paymentStatus) o.paymentStatus = mo.paymentStatus;
-                        if (mo.paymentMethod) o.paymentMethod = mo.paymentMethod;
-                        if (mo.paymentDate) o.paymentDate = mo.paymentDate;
-                    }
-                });
+        // Pulls this customer's orders straight from the server. The old
+        // "sync engine" copied statuses out of localStorage keys the manager,
+        // stock clerk and account clerk dashboards were supposed to have
+        // written - which they can't, since localStorage is per-browser. Every
+        // status shown here is now the same row those roles actually update.
+        // Which rejections this tab has already toasted about, so a poll every
+        // 8 seconds doesn't re-alert on the same order.
+        const notifiedRejections = new Set();
 
-                let linkedOrders = JSON.parse(localStorage.getItem('linkedDashOrders') || '[]');
-                linkedOrders.forEach(lo => {
-                    let o = orders.find(x => x.id === lo.id);
-                    if (o) {
-                        if (lo.deliveryStatus !== undefined) o.deliveryStatus = lo.deliveryStatus;
-                        if (lo.paymentStatus !== undefined) o.paymentStatus = lo.paymentStatus;
-                        if (lo.orderStatus !== undefined) o.status = lo.orderStatus;
-                        if (lo.paymentMethod) o.paymentMethod = lo.paymentMethod;
-                        if (lo.paymentDate) o.paymentDate = lo.paymentDate;
-                    }
-                });
+        function toCustomerOrder(o) {
+            let status = 'Pending Approval';
+            if (o.manager_approval === 'rejected' || o.stock_clerk_approval === 'rejected') status = 'Rejected';
+            else if (o.delivery_status === 'delivered' && o.payment_status === 'paid') status = 'Complete';
+            else if (o.manager_approval === 'approved') status = 'Approved';
 
-                checkRejectedOrders();
-                checkAllOrdersStatus();
+            const deliveryLabel = {
+                pending: 'Pending', processing: 'Processing', shipped: 'Shipped',
+                delivered: 'Delivered', cancelled: 'Cancelled'
+            }[o.delivery_status] || 'Pending';
 
-            } catch (e) { console.error('Sync error:', e); }
+            const paymentLabel = {
+                pending: 'Pending', processing: 'Processing', paid: 'Paid', failed: 'Failed'
+            }[o.payment_status] || 'Pending';
+
+            return {
+                orderId: Number(o.order_id),
+                id: o.order_code,
+                date: (o.order_date || '').split(' ')[0],
+                items: (o.items || []).map(i => ({
+                    productId: Number(i.product_id),
+                    name: i.product_name,
+                    quantity: Number(i.quantity),
+                    pricePerKg: Number(i.unit_price),
+                    total: Number(i.line_total)
+                })),
+                total: Number(o.total_amount),
+                status: status,
+                deliveryStatus: deliveryLabel,
+                paymentStatus: paymentLabel,
+                paymentMethod: o.payment_method || 'Not Selected',
+                shippingZone: o.delivery_region || 'Standard Delivery',
+                shippingFee: Number(o.shipping_amount || 0),
+                paymentDate: o.payment_status === 'paid' ? o.updated_at : null,
+                rejectionReason: o.rejection_reason || '',
+                rejectionNotified: notifiedRejections.has(o.order_code)
+            };
         }
 
-        function pushOrdersToAllDashboards() {
-            let customerName = 'Customer';
+        async function loadOrdersFromServer() {
             try {
-                const session = JSON.parse(localStorage.getItem('user_session'));
-                if (session) {
-                    customerName = session.full_name || session.first_name + ' ' + session.last_name || 'Customer';
-                }
-            } catch (e) {}
+                const r = await fetch('../../api/get_orders.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleSessionExpired(); return false; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_orders.php:', data.message); return false; }
+                orders = (data.orders || []).map(toCustomerOrder);
+                return true;
+            } catch (e) {
+                console.error('Failed to load orders:', e);
+                return false;
+            }
+        }
 
-            let managerOrders = JSON.parse(localStorage.getItem('managerOrders') || '[]');
-            orders.forEach(custOrder => {
-                let existing = managerOrders.find(o => o.id === custOrder.id);
-                const firstItem = custOrder.items && custOrder.items[0] ? custOrder.items[0] : null;
-                if (!existing) {
-                    managerOrders.push({
-                        id: custOrder.id,
-                        name: customerName,
-                        type: 'Customer',
-                        product: firstItem ? firstItem.name : 'Mixed Items',
-                        qty: firstItem ? firstItem.quantity : 0,
-                        price: firstItem ? (firstItem.pricePerKg || 0) : 0,
-                        total: custOrder.total,
-                        status: custOrder.status || 'Pending Approval',
-                        orderDate: custOrder.date,
-                        deliveryStatus: custOrder.deliveryStatus || 'Pending',
-                        paymentStatus: custOrder.paymentStatus || 'Pending',
-                        paymentMethod: custOrder.paymentMethod || 'Not Selected',
-                        paymentDate: custOrder.paymentDate || null,
-                        discountRequested: 0,
-                        discountApproved: false,
-                        shippingZone: custOrder.shippingZone || 'Standard Delivery',
-                        shippingFee: custOrder.shippingFee || 250,
-                        notes: ''
-                    });
-                } else {
-                    existing.status = custOrder.status;
-                    existing.paymentStatus = custOrder.paymentStatus;
-                    existing.paymentMethod = custOrder.paymentMethod;
-                    existing.paymentDate = custOrder.paymentDate;
-                }
-            });
-            localStorage.setItem('managerOrders', JSON.stringify(managerOrders));
+        // A non-blocking banner, not alert() - this fires from a background
+        // poll as well as from user actions, and a modal dialog on a timer
+        // interrupts whatever the user was typing (and blocks the page
+        // entirely in an automated/embedded browser). Mirrors the manager
+        // dashboard's handleAuthFailure().
+        function showSessionExpiredBanner(message) {
+            try {
+                localStorage.removeItem('user_session');
+                localStorage.removeItem('supplier_session');
+            } catch (e) { /* ignore */ }
 
-            let linkedOrders = JSON.parse(localStorage.getItem('linkedDashOrders') || '[]');
-            orders.forEach(custOrder => {
-                let existing = linkedOrders.find(o => o.id === custOrder.id);
-                const firstItem = custOrder.items && custOrder.items[0] ? custOrder.items[0] : null;
-                if (!existing) {
-                    linkedOrders.push({
-                        id: custOrder.id,
-                        name: customerName,
-                        type: 'Customer',
-                        product: firstItem ? firstItem.name : 'Mixed Items',
-                        qty: firstItem ? firstItem.quantity : 0,
-                        total: custOrder.total,
-                        orderStatus: custOrder.status || 'Pending Approval',
-                        paymentStatus: custOrder.paymentStatus || 'Pending',
-                        paymentMethod: custOrder.paymentMethod || 'Not Selected',
-                        paymentDate: custOrder.paymentDate || null,
-                        deliveryStatus: custOrder.deliveryStatus || 'Pending',
-                        orderDate: custOrder.date,
-                        shippingZone: custOrder.shippingZone || 'Standard Delivery'
-                    });
-                } else {
-                    existing.orderStatus = custOrder.status;
-                    existing.paymentStatus = custOrder.paymentStatus;
-                    existing.paymentMethod = custOrder.paymentMethod;
-                    existing.paymentDate = custOrder.paymentDate;
-                }
-            });
-            localStorage.setItem('linkedDashOrders', JSON.stringify(linkedOrders));
+            const banner = document.createElement('div');
+            banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+                'background:#c0392b;color:#fff;padding:14px 20px;text-align:center;' +
+                'font:600 15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;' +
+                'box-shadow:0 2px 10px rgba(0,0,0,.3);';
+            banner.textContent = message;
+            document.body.prepend(banner);
+            setTimeout(() => { window.location.href = '../auth/login.html'; }, 2200);
+        }
+
+        function handleSessionExpired() {
+            if (window.__sessionExpiredHandled) return;
+            window.__sessionExpiredHandled = true;
+            showSessionExpiredBanner('⚠️ Your session has expired or you are not logged in as a customer. Redirecting to login…');
+        }
+
+        function syncAllStatuses() {
+            checkAllOrdersStatus();
         }
 
         // ===================================================
@@ -2256,11 +2279,11 @@
 
         let previousOrderStates = {};
 
-        function refreshOrders() {
+        async function refreshOrders() {
             const oldOrders = JSON.parse(JSON.stringify(orders));
-            
+
+            if (!(await loadOrdersFromServer())) return;
             syncAllStatuses();
-            pushOrdersToAllDashboards();
             loadOrders();
             
             // Check for status changes and show notifications
@@ -2464,73 +2487,70 @@
         // ========== CHECKOUT WITH PAYMENT ==========
         // ===================================================
 
-        function checkout() {
+        async function checkout() {
             if (cart.length === 0) { showToast('Cart is empty!', 'error'); return; }
 
             let zone = getShippingZone();
             let shippingCharge = getShippingFee();
             let subtotal = cart.reduce((sum, item) => sum + item.total, 0);
             let total = subtotal + shippingCharge;
-            let orderId = 'ORD-' + String(orders.length + 100).padStart(3, '0');
 
-            let paymentType = '';
-            let paymentStatus = '';
+            const paymentType = selectedPaymentMethod === 'cod' ? 'Cash on Delivery' : 'Online Payment';
 
-            if (selectedPaymentMethod === 'cod') {
-                paymentType = 'Cash on Delivery';
-                paymentStatus = 'Pending (COD)';
-            } else {
-                paymentType = 'Online Payment';
-                paymentStatus = 'Processing';
-
+            if (selectedPaymentMethod !== 'cod') {
                 const payNow = confirm(
                     '💳 Online Payment\n\n' +
-                    'Order ID: ' + orderId + '\n' +
                     'Total Amount: Rs. ' + total.toFixed(2) + '\n\n' +
                     'Click OK to proceed with payment\n' +
                     'Click Cancel to go back'
                 );
+                if (!payNow) return;
+                showToast('⏳ Processing payment...');
+            }
 
-                if (!payNow) {
+            const checkoutBtn = document.querySelector('.checkout-btn');
+            if (checkoutBtn) { checkoutBtn.disabled = true; checkoutBtn.textContent = 'Placing order...'; }
+
+            try {
+                // The order is created on the server, where it enters the
+                // manager's approval queue. Previously it only went into this
+                // browser's localStorage, so no manager ever saw it.
+                const r = await fetch('../../api/create_order.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        order_type: 'customer',
+                        items: cart.map(c => ({ product_id: c.productId, quantity: c.quantity })),
+                        shipping_amount: shippingCharge,
+                        delivery_region: zone.name,
+                        payment_method: paymentType
+                    })
+                });
+
+                if (r.status === 401 || r.status === 403) { handleSessionExpired(); return; }
+                const data = await r.json();
+                if (!data.success) {
+                    showToast('❌ ' + (data.message || 'Could not place the order'), 'error');
                     return;
                 }
 
-                showToast('⏳ Processing payment...');
+                showToast(`✅ Order placed! ID: ${data.order_code}`);
+                showToast(`💰 ${paymentType}: Rs. ${total.toFixed(2)}`);
 
-                setTimeout(() => {
-                    showToast('✅ Payment Successful! Order: ' + orderId);
-                }, 1500);
+                cart = [];
+                updateCart();
+                closeCart();
 
-                paymentStatus = 'Processing (Paid)';
+                await Promise.all([loadOrdersFromServer(), loadProductsFromServer()]);
+                loadOrders();
+                loadReturns();
+                showTab('orders');
+            } catch (e) {
+                showToast('❌ Could not reach the server: ' + e.message, 'error');
+            } finally {
+                if (checkoutBtn) { checkoutBtn.disabled = false; checkoutBtn.textContent = 'Proceed to Checkout'; }
             }
-
-            let newOrder = {
-                id: orderId,
-                date: new Date().toISOString().split('T')[0],
-                items: cart.map(c => ({ ...c })),
-                total: total,
-                status: 'Pending Approval',
-                deliveryStatus: 'Pending',
-                paymentStatus: paymentStatus,
-                paymentMethod: paymentType,
-                shippingZone: zone.name,
-                shippingFee: shippingCharge,
-                rejectionNotified: false,
-                paymentDate: selectedPaymentMethod === 'online' ? new Date().toISOString() : null
-            };
-
-            orders.push(newOrder);
-            pushOrdersToAllDashboards();
-
-            showToast(`✅ Order placed! ID: ${orderId}`);
-            showToast(`💰 ${paymentType}: Rs. ${total.toFixed(2)}`);
-
-            cart = [];
-            updateCart();
-            closeCart();
-            loadOrders();
-            loadReturns();
-            showTab('orders');
         }
 
         // ===================================================
@@ -2794,21 +2814,36 @@
         // ========== MESSAGES ==========
         // ===================================================
 
-        function showUserMessages() {
+        // Real notifications for this account, written server-side whenever
+        // the manager, stock clerk or account clerk moves one of this
+        // customer's orders along (api/get_notifications.php).
+        async function showUserMessages() {
+            const area = document.getElementById('userMessagesArea');
+            if (!area) return;
+
             try {
-                let messages = JSON.parse(localStorage.getItem('userMessages') || '[]');
-                let html = '';
-                messages.filter(m => m.recipientType === 'Customer').reverse().forEach(m => {
-                    const isRejection = m.type === 'rejection';
-                    html +=
-                        `<div style="background:${isRejection ? '#ffebee' : '#fff'};padding:10px;border-radius:8px;margin-bottom:8px;border-left:4px solid ${isRejection ? '#c62828' : '#8B4513'};">
-                                    <strong>${m.date} — ${m.orderId}</strong>
-                                    <div style="margin-top:6px;color:${isRejection ? '#c62828' : '#333'};">${m.message}</div>
-                                </div>`;
-                });
-                if (html === '') html = '<div style="color:#aaa;font-size:13px;">No messages from manager.</div>';
-                document.getElementById('userMessagesArea').innerHTML = html;
-            } catch (e) {}
+                const r = await fetch('../../api/get_notifications.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleSessionExpired(); return; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_notifications.php:', data.message); return; }
+
+                const messages = data.notifications || [];
+                if (!messages.length) {
+                    area.innerHTML = '<div style="color:#aaa;font-size:13px;">No messages from manager.</div>';
+                    return;
+                }
+
+                area.innerHTML = messages.map(m => {
+                    const isRejection = m.type === 'error';
+                    const when = (m.created_at || '').split(' ')[0];
+                    return `<div style="background:${isRejection ? '#ffebee' : '#fff'};padding:10px;border-radius:8px;margin-bottom:8px;border-left:4px solid ${isRejection ? '#c62828' : '#8B4513'};">
+                                <strong>${when} — ${m.title}</strong>
+                                <div style="margin-top:6px;color:${isRejection ? '#c62828' : '#333'};">${m.message}</div>
+                            </div>`;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load messages:', e);
+            }
         }
 
         // ===================================================
@@ -2838,43 +2873,37 @@
         // ========== INIT ==========
         // ===================================================
 
-        document.addEventListener('DOMContentLoaded', () => {
-            const session = checkSession();
+        document.addEventListener('DOMContentLoaded', async () => {
+            const session = await checkSession();
             if (!session) return;
 
             loadCustomerFromSession();
 
-            const savedOrders = localStorage.getItem('customer_orders');
-            if (savedOrders) {
-                orders = JSON.parse(savedOrders);
-            }
-
+            // Returns are still a client-side feature; orders and products
+            // come from the server.
             const savedReturns = localStorage.getItem('customer_returns');
             if (savedReturns) {
                 returns = JSON.parse(savedReturns);
             }
 
+            await Promise.all([loadProductsFromServer(), loadOrdersFromServer()]);
+
             syncAllStatuses();
-            pushOrdersToAllDashboards();
             showUserMessages();
             loadOrders();
-            loadProducts();
             loadReturns();
             updateCartCount();
             renderShippingOptions();
 
             document.getElementById('filterAll').classList.add('active');
 
-            // ===== UPDATED: Auto refresh every 8 seconds =====
-            setInterval(() => {
-                syncAllStatuses();
-                pushOrdersToAllDashboards();
-                loadOrders();
-            }, 8000);
+            // Poll the server for manager / stock clerk / account clerk
+            // decisions on this customer's orders.
+            setInterval(refreshOrders, 8000);
+            setInterval(showUserMessages, 30000);
         });
 
         window.addEventListener('beforeunload', () => {
-            localStorage.setItem('customer_orders', JSON.stringify(orders));
             localStorage.setItem('customer_returns', JSON.stringify(returns));
         });
     </script>

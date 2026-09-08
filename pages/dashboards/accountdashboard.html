@@ -664,12 +664,15 @@
                 <div class="card">
                     <h2><i class="ti ti-plus"></i> Record Customer Payment</h2>
                     <div class="form-row">
-                        <div class="fg"><label>Customer Name</label><input type="text" id="cp-name"
-                                placeholder="e.g. Saman Perera"></div>
-                        <div class="fg"><label>Invoice #</label><input type="text" id="cp-inv"
-                                placeholder="INV-2026-0001"></div>
+                        <div class="fg"><label>Outstanding Order</label>
+                            <select id="cp-order" onchange="fillPaymentFromOrder('cp')">
+                                <option value="">— Select an approved customer order —</option>
+                            </select>
+                        </div>
+                        <div class="fg"><label>Customer</label><input type="text" id="cp-name" readonly
+                                placeholder="Filled from the selected order"></div>
                         <div class="fg"><label>Amount (LKR)</label><input type="number" id="cp-amount"
-                                placeholder="0.00" min="0"></div>
+                                placeholder="0.00" min="0" step="0.01"></div>
                     </div>
                     <div class="form-row">
                         <div class="fg"><label>Payment Date</label><input type="date" id="cp-date"></div>
@@ -693,7 +696,7 @@
                             <tr>
                                 <th>ID</th>
                                 <th>Customer</th>
-                                <th>Invoice #</th>
+                                <th>Order</th>
                                 <th>Amount (LKR)</th>
                                 <th>Method</th>
                                 <th>Date</th>
@@ -710,12 +713,15 @@
                 <div class="card">
                     <h2><i class="ti ti-plus"></i> Record Wholesaler Payment</h2>
                     <div class="form-row">
-                        <div class="fg"><label>Wholesaler Name</label><input type="text" id="wp-name"
-                                placeholder="e.g. Colombo Wholesale Co."></div>
-                        <div class="fg"><label>Invoice #</label><input type="text" id="wp-inv"
-                                placeholder="WINV-2026-0001"></div>
+                        <div class="fg"><label>Outstanding Order</label>
+                            <select id="wp-order" onchange="fillPaymentFromOrder('wp')">
+                                <option value="">— Select an approved wholesaler order —</option>
+                            </select>
+                        </div>
+                        <div class="fg"><label>Wholesaler</label><input type="text" id="wp-name" readonly
+                                placeholder="Filled from the selected order"></div>
                         <div class="fg"><label>Amount (LKR)</label><input type="number" id="wp-amount"
-                                placeholder="0.00" min="0"></div>
+                                placeholder="0.00" min="0" step="0.01"></div>
                     </div>
                     <div class="form-row">
                         <div class="fg"><label>Payment Date</label><input type="date" id="wp-date"></div>
@@ -739,7 +745,7 @@
                             <tr>
                                 <th>ID</th>
                                 <th>Wholesaler</th>
-                                <th>Invoice #</th>
+                                <th>Order</th>
                                 <th>Amount (LKR)</th>
                                 <th>Method</th>
                                 <th>Date</th>
@@ -994,21 +1000,111 @@
         window.logoutUser = logoutUser;
 
         // ===================== DATA =====================
-        let customerPayments = JSON.parse(localStorage.getItem('custPay') || 'null');
-        let wholesalerPayments = JSON.parse(localStorage.getItem('wholePay') || 'null');
+        // Customer and wholesaler collections come from the real payments
+        // table (api/get_payments.php), filed against the orders they settle.
+        // They used to be hardcoded demo rows kept in localStorage, so a real
+        // customer or wholesaler order never appeared on this dashboard and a
+        // payment recorded here never reached the customer or the manager.
+        let customerPayments = [];
+        let wholesalerPayments = [];
+        let outstandingOrders = [];
         let supplierInvoices = JSON.parse(localStorage.getItem('supplierInvoices')) || [];
 
-        // Sample data if nothing in storage
-        if (!customerPayments) customerPayments = [
-            { id: 'CPAY-001', name: 'Saman Perera', invoice: 'INV-2026-0125', amount: 25000, method: 'Bank Transfer',
-                date: '2026-05-10', reference: 'TR123', type: 'Customer' },
-            { id: 'CPAY-002', name: 'Nimali Stores', invoice: 'INV-2026-0142', amount: 42000, method: 'Cash',
-                date: '2026-05-20', reference: '', type: 'Customer' }
-        ];
-        if (!wholesalerPayments) wholesalerPayments = [
-            { id: 'WPAY-001', name: 'Colombo Wholesale Co.', invoice: 'WINV-2026-0010', amount: 85000,
-                method: 'Bank Transfer', date: '2026-05-15', reference: 'TRW001', type: 'Wholesaler' }
-        ];
+        // A non-blocking banner, not alert() - this fires from a background
+        // poll as well as from user actions, and a modal dialog on a timer
+        // interrupts whatever the user was typing (and blocks the page
+        // entirely in an automated/embedded browser). Mirrors the manager
+        // dashboard's handleAuthFailure().
+        function showSessionExpiredBanner(message) {
+            try {
+                localStorage.removeItem('user_session');
+                localStorage.removeItem('supplier_session');
+            } catch (e) { /* ignore */ }
+
+            const banner = document.createElement('div');
+            banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+                'background:#c0392b;color:#fff;padding:14px 20px;text-align:center;' +
+                'font:600 15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;' +
+                'box-shadow:0 2px 10px rgba(0,0,0,.3);';
+            banner.textContent = message;
+            document.body.prepend(banner);
+            setTimeout(() => { window.location.href = '../auth/login.html'; }, 2200);
+        }
+
+        function handleAccountAuthFailure() {
+            if (window.__accountAuthWarned) return;
+            window.__accountAuthWarned = true;
+            showSessionExpiredBanner('⚠️ Your session has expired or you are not logged in as an account clerk. Redirecting to login…');
+        }
+
+        async function loadPayments() {
+            try {
+                const r = await fetch('../../api/get_payments.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleAccountAuthFailure(); return false; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_payments.php:', data.message); return false; }
+
+                const mapPayment = (p, type) => ({
+                    id: (type === 'Customer' ? 'CPAY-' : 'WPAY-') + String(p.payment_id).padStart(3, '0'),
+                    paymentId: Number(p.payment_id),
+                    orderId: p.order_id === null ? null : Number(p.order_id),
+                    name: p.party_name,
+                    invoice: p.order_code || '-',
+                    amount: Number(p.amount),
+                    method: p.payment_method || '-',
+                    date: (p.payment_date || '').split(' ')[0],
+                    reference: p.reference_no || '',
+                    status: p.status,
+                    type: type
+                });
+
+                customerPayments = (data.customer_payments || []).map(p => mapPayment(p, 'Customer'));
+                wholesalerPayments = (data.wholesaler_payments || []).map(p => mapPayment(p, 'Wholesaler'));
+
+                outstandingOrders = (data.outstanding || []).map(o => ({
+                    orderId: Number(o.order_id),
+                    code: o.order_code,
+                    type: o.order_type === 'wholesaler' ? 'Wholesaler' : 'Customer',
+                    name: o.party_name,
+                    total: Number(o.total_amount),
+                    paid: Number(o.amount_paid),
+                    balance: Number(o.balance_due),
+                    date: (o.order_date || '').split(' ')[0],
+                    deliveryStatus: o.delivery_status,
+                    paymentStatus: o.payment_status
+                }));
+
+                populateOutstandingSelectors();
+                return true;
+            } catch (e) {
+                console.error('Failed to load payments:', e);
+                return false;
+            }
+        }
+
+        // Fills the two "Outstanding Order" dropdowns with real, manager-approved
+        // orders that still owe money.
+        function populateOutstandingSelectors() {
+            [['cp', 'Customer'], ['wp', 'Wholesaler']].forEach(([prefix, type]) => {
+                const select = document.getElementById(prefix + '-order');
+                if (!select) return;
+
+                const current = select.value;
+                const rows = outstandingOrders.filter(o => o.type === type);
+                select.innerHTML = `<option value="">— Select an approved ${type.toLowerCase()} order —</option>` +
+                    rows.map(o => `<option value="${o.orderId}">${o.code} — ${o.name} — balance Rs. ${o.balance.toLocaleString()}</option>`).join('');
+
+                if (rows.some(o => String(o.orderId) === current)) select.value = current;
+            });
+        }
+
+        function fillPaymentFromOrder(prefix) {
+            const orderId = document.getElementById(prefix + '-order').value;
+            const order = outstandingOrders.find(o => String(o.orderId) === orderId);
+
+            document.getElementById(prefix + '-name').value = order ? order.name : '';
+            document.getElementById(prefix + '-amount').value = order ? order.balance.toFixed(2) : '';
+        }
 
         // GRNs - loaded from the real backend (api/account_grns.php), which
         // reads the same stock_clerk_db.grns table the Stock Clerk's own
@@ -1081,9 +1177,9 @@
             deriveSupplierPayments();
         }
 
+        // Payments live in the database now - only the supplier-invoice
+        // scratchpad is still cached locally.
         function save() {
-            localStorage.setItem('custPay', JSON.stringify(customerPayments));
-            localStorage.setItem('wholePay', JSON.stringify(wholesalerPayments));
             localStorage.setItem('supplierInvoices', JSON.stringify(supplierInvoices));
         }
 
@@ -1094,14 +1190,14 @@
             document.querySelectorAll('.side li a').forEach(a => a.classList.remove('act'));
             let nav = document.getElementById('nav-' + id);
             if (nav) nav.classList.add('act');
-            if (id === 'history') renderHistory();
-            if (id === 'outstanding') renderOutstanding();
+            if (id === 'history') { await loadPayments(); renderHistory(); }
+            if (id === 'outstanding') { await loadPayments(); renderOutstanding(); }
             // Re-fetch so a GRN the Stock Clerk just created, or a payment
             // processed from another session, shows up without a reload.
             if (id === 'sup-pay') { await loadGRNs(); renderSupPay(); }
             if (id === 'sup-invoices') { await loadGRNs(); renderSupInvoices(); }
-            if (id === 'cust-pay') renderCustPay();
-            if (id === 'whole-pay') renderWholePay();
+            if (id === 'cust-pay') { await loadPayments(); renderCustPay(); }
+            if (id === 'whole-pay') { await loadPayments(); renderWholePay(); }
         }
 
         // ===================== STATS =====================
@@ -1262,77 +1358,79 @@
             });
         }
 
-        // ===================== CUSTOMER PAYMENTS =====================
-        function addCustomerPayment() {
-            let name = document.getElementById('cp-name').value.trim();
-            let inv = document.getElementById('cp-inv').value.trim();
-            let amount = parseFloat(document.getElementById('cp-amount').value);
-            let date = document.getElementById('cp-date').value;
-            let method = document.getElementById('cp-method').value;
-            let ref = document.getElementById('cp-ref').value.trim();
-            if (!name || !inv || !amount || amount <= 0) { alert('Please fill in Customer Name, Invoice # and Amount.');
-                return; }
-            let id = 'CPAY-' + String(customerPayments.length + 1).padStart(3, '0');
-            customerPayments.push({ id, name, invoice: inv, amount, method, date: date || new Date().toISOString().split(
-                    'T')[0], reference: ref, type: 'Customer' });
-            save();
-            renderCustPay();
-            updateStats();
-            buildRevChart();
-            buildPieChart();
-            document.getElementById('cp-name').value = '';
-            document.getElementById('cp-inv').value = '';
-            document.getElementById('cp-amount').value = '';
-            document.getElementById('cp-ref').value = '';
-            alert('✅ Customer payment recorded: ' + id);
+        // ===================== CUSTOMER / WHOLESALER PAYMENTS =====================
+        // Recording a payment POSTs it to api/process_payment.php, which files
+        // it against the order and recomputes that order's payment_status - so
+        // the customer, the manager and this dashboard all see the same thing.
+        async function recordPayment(prefix, type) {
+            const orderId = document.getElementById(prefix + '-order').value;
+            const amount = parseFloat(document.getElementById(prefix + '-amount').value);
+            const date = document.getElementById(prefix + '-date').value;
+            const method = document.getElementById(prefix + '-method').value;
+            const ref = document.getElementById(prefix + '-ref').value.trim();
+
+            if (!orderId) { alert('Please select the order this payment settles.'); return; }
+            if (!amount || amount <= 0) { alert('Please enter an amount greater than zero.'); return; }
+
+            const order = outstandingOrders.find(o => String(o.orderId) === orderId);
+            if (order && amount > order.balance + 0.01) {
+                if (!confirm(`This is more than the Rs. ${order.balance.toLocaleString()} still owed on ${order.code}.\n\nRecord it anyway?`)) return;
+            }
+
+            try {
+                const r = await fetch('../../api/process_payment.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        order_id: Number(orderId),
+                        payment_type: type.toLowerCase(),
+                        amount: amount,
+                        payment_method: method,
+                        reference_no: ref || null,
+                        payment_date: date || null,
+                        status: 'paid'
+                    })
+                });
+
+                if (r.status === 401 || r.status === 403) { handleAccountAuthFailure(); return; }
+                const data = await r.json();
+                if (!data.success) { alert('❌ ' + (data.message || 'Could not record the payment')); return; }
+
+                await loadPayments();
+                renderCustPay();
+                renderWholePay();
+                renderOutstanding();
+                updateStats();
+                buildRevChart();
+                buildPieChart();
+
+                document.getElementById(prefix + '-order').value = '';
+                document.getElementById(prefix + '-name').value = '';
+                document.getElementById(prefix + '-amount').value = '';
+                document.getElementById(prefix + '-ref').value = '';
+
+                alert(`✅ ${type} payment recorded. Order is now marked "${data.order_payment_status}".`);
+            } catch (e) {
+                alert('❌ Could not reach the server: ' + e.message);
+            }
         }
 
-        function renderCustPay() {
-            let html = '';
-            customerPayments.slice().reverse().forEach(p => {
-                html += `<tr><td>${p.id}</td><td>${p.name}</td><td>${p.invoice}</td>
-                         <td>Rs.${p.amount.toLocaleString()}</td><td>${p.method}</td>
-                         <td>${p.date}</td><td>${p.reference || '-'}</td></tr>`;
-            });
-            document.getElementById('cust-pay-body').innerHTML = html ||
+        function addCustomerPayment() { return recordPayment('cp', 'Customer'); }
+        function addWholesalerPayment() { return recordPayment('wp', 'Wholesaler'); }
+
+        function renderPaymentRows(rows, bodyId) {
+            const html = rows.map(p => `
+                <tr><td>${p.id}</td><td>${p.name}</td><td>${p.invoice}</td>
+                    <td>Rs.${p.amount.toLocaleString()}</td><td>${p.method}</td>
+                    <td>${p.date}</td><td>${p.reference || '-'}</td></tr>
+            `).join('');
+            document.getElementById(bodyId).innerHTML = html ||
                 '<tr><td colspan="7" style="text-align:center;color:#999;padding:20px">No records yet</td></tr>';
         }
 
-        // ===================== WHOLESALER PAYMENTS =====================
-        function addWholesalerPayment() {
-            let name = document.getElementById('wp-name').value.trim();
-            let inv = document.getElementById('wp-inv').value.trim();
-            let amount = parseFloat(document.getElementById('wp-amount').value);
-            let date = document.getElementById('wp-date').value;
-            let method = document.getElementById('wp-method').value;
-            let ref = document.getElementById('wp-ref').value.trim();
-            if (!name || !inv || !amount || amount <= 0) { alert('Please fill in Wholesaler Name, Invoice # and Amount.');
-                return; }
-            let id = 'WPAY-' + String(wholesalerPayments.length + 1).padStart(3, '0');
-            wholesalerPayments.push({ id, name, invoice: inv, amount, method, date: date || new Date().toISOString().split(
-                    'T')[0], reference: ref, type: 'Wholesaler' });
-            save();
-            renderWholePay();
-            updateStats();
-            buildRevChart();
-            buildPieChart();
-            document.getElementById('wp-name').value = '';
-            document.getElementById('wp-inv').value = '';
-            document.getElementById('wp-amount').value = '';
-            document.getElementById('wp-ref').value = '';
-            alert('✅ Wholesaler payment recorded: ' + id);
-        }
-
-        function renderWholePay() {
-            let html = '';
-            wholesalerPayments.slice().reverse().forEach(p => {
-                html += `<tr><td>${p.id}</td><td>${p.name}</td><td>${p.invoice}</td>
-                         <td>Rs.${p.amount.toLocaleString()}</td><td>${p.method}</td>
-                         <td>${p.date}</td><td>${p.reference || '-'}</td></tr>`;
-            });
-            document.getElementById('whole-pay-body').innerHTML = html ||
-                '<tr><td colspan="7" style="text-align:center;color:#999;padding:20px">No records yet</td></tr>';
-        }
+        function renderCustPay() { renderPaymentRows(customerPayments, 'cust-pay-body'); }
+        function renderWholePay() { renderPaymentRows(wholesalerPayments, 'whole-pay-body'); }
 
         // ===================== SUPPLIER PAYMENTS =====================
         function renderSupPay() {
@@ -1549,21 +1647,20 @@
 
         // ===================== OUTSTANDING =====================
         function renderOutstanding() {
-            let customerOut = [
-                { id: 'INV-2026-0125', customer: 'Saman Perera', date: '2026-02-10', dueDate: '2026-02-25',
-                amount: 25000 },
-                { id: 'INV-2026-0142', customer: 'Nimali Stores', date: '2026-02-25', dueDate: '2026-03-11',
-                amount: 42000 }
-            ];
+            // Real approved-but-unpaid orders, customer and wholesaler alike
+            // (api/get_payments.php). These were two hardcoded demo invoices.
             let today = new Date();
             let html = '';
-            customerOut.forEach(inv => {
-                let due = new Date(inv.dueDate);
-                let days = Math.ceil((today - due) / (1000 * 60 * 60 * 24));
-                let cls = days > 30 ? 'bg-d' : days > 0 ? 'bg-w' : 'bg-s';
-                let txt = days > 30 ? 'Critical' : days > 0 ? 'Overdue' : 'Current';
-                html += `<tr><td>${inv.customer}</td><td>${inv.id}</td><td>${inv.date}</td><td>${inv.dueDate}</td>
-                         <td>Rs.${inv.amount.toLocaleString()}</td><td>${Math.max(0, days)} days</td>
+            outstandingOrders.forEach(o => {
+                // 14 days' credit from the order date is this app's standard term.
+                const due = new Date(new Date(o.date).getTime() + 14 * 86400000);
+                const dueDate = due.toISOString().split('T')[0];
+                const days = Math.ceil((today - due) / (1000 * 60 * 60 * 24));
+                const cls = days > 30 ? 'bg-d' : days > 0 ? 'bg-w' : 'bg-s';
+                const txt = days > 30 ? 'Critical' : days > 0 ? 'Overdue' : 'Current';
+                html += `<tr><td>${o.name} <span class="bdg bg-s">${o.type}</span></td><td>${o.code}</td>
+                         <td>${o.date}</td><td>${dueDate}</td>
+                         <td>Rs.${o.balance.toLocaleString()}</td><td>${Math.max(0, days)} days</td>
                          <td><span class="bdg ${cls}">${txt}</span></td></tr>`;
             });
             document.getElementById('out-body').innerHTML = html ||
@@ -1707,7 +1804,7 @@
             document.getElementById('rpt-from').value = '2026-01-01';
             document.getElementById('rpt-to').value = today;
 
-            await loadGRNs();
+            await Promise.all([loadGRNs(), loadPayments()]);
             updateStats();
             renderCustPay();
             renderWholePay();
@@ -1717,27 +1814,24 @@
             renderHistory();
             setTimeout(() => { buildRevChart(); buildPieChart(); }, 150);
 
-            // Auto sync - re-fetches real GRNs/payments (api/account_grns.php)
-            // so a GRN the Stock Clerk just created, or a payment processed
-            // from another session, shows up without a reload.
+            // Auto sync - re-fetches real GRNs (api/account_grns.php) and real
+            // customer/wholesaler collections plus outstanding orders
+            // (api/get_payments.php), so an order the manager just approved or
+            // the stock clerk just delivered shows up without a reload.
             setInterval(async () => {
-                await loadGRNs();
+                await Promise.all([loadGRNs(), loadPayments()]);
                 let storedInvoices = JSON.parse(localStorage.getItem('supplierInvoices'));
                 if (storedInvoices) supplierInvoices = storedInvoices;
+                renderCustPay();
+                renderWholePay();
                 renderSupPay();
                 renderSupInvoices();
+                renderOutstanding();
                 updateStats();
             }, 10000);
         });
 
-        console.log('💰 Account Clerk Dashboard loaded successfully!');
-        console.log('📊 Data loaded:', {
-            customerPayments: customerPayments.length,
-            wholesalerPayments: wholesalerPayments.length,
-            supplierPayments: supplierPayments.length,
-            grns: grns.length,
-            supplierInvoices: supplierInvoices.length
-        });
+        console.log('💰 Account Clerk Dashboard loaded - payments and outstanding orders come from the server.');
     </script>
 </body>
 

@@ -27,7 +27,44 @@ function get_pdo(): PDO
         PDO::ATTR_EMULATE_PREPARES => false,
     ]);
 
+    ensure_order_workflow_columns($pdo);
+
     return $pdo;
+}
+
+/**
+ * Order-workflow columns that the shipped database/pearl_land_db.sql dump
+ * predates. The QA flow (customer/wholesaler places -> manager approves ->
+ * stock clerk approves -> delivery -> account clerk collects payment) needs
+ * a stock-clerk decision of its own, a reason to show back on a rejection,
+ * and the payment method the buyer chose at checkout - none of which the
+ * original `orders` table had. Added here (idempotently) rather than only
+ * in the .sql dump so existing installs pick them up without a re-import.
+ */
+function ensure_order_workflow_columns(PDO $pdo): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    if (!has_column($pdo, 'orders', 'stock_clerk_approval')) {
+        $pdo->exec("ALTER TABLE orders ADD stock_clerk_approval ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending' AFTER manager_approval");
+        $pdo->exec('ALTER TABLE orders ADD INDEX idx_stock_clerk_approval (stock_clerk_approval)');
+    }
+    if (!has_column($pdo, 'orders', 'payment_method')) {
+        $pdo->exec('ALTER TABLE orders ADD payment_method VARCHAR(50) NULL AFTER payment_status');
+    }
+    if (!has_column($pdo, 'orders', 'rejection_reason')) {
+        $pdo->exec('ALTER TABLE orders ADD rejection_reason TEXT NULL AFTER tracking_number');
+    }
+    if (!has_column($pdo, 'orders', 'approved_by')) {
+        $pdo->exec('ALTER TABLE orders ADD approved_by INT NULL AFTER created_by');
+    }
+    if (!has_column($pdo, 'orders', 'approved_at')) {
+        $pdo->exec('ALTER TABLE orders ADD approved_at DATETIME NULL AFTER approved_by');
+    }
 }
 
 function json_input(): array

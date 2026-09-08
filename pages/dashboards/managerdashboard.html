@@ -1156,7 +1156,7 @@
             <ul class="nav-menu">
                 <li><a onclick="showSection('dashboard')" class="active"><span class="icon">📊</span> Dashboard</a></li>
                 <li><a onclick="showSection('wholesaler-orders')"><span class="icon">🏪</span> Wholesaler Orders <span class="badge-count" id="wholesalerPendingBadge">0</span></a></li>
-                <li><a onclick="showSection('orders')"><span class="icon">📋</span> Orders</a></li>
+                <li><a onclick="showSection('orders')"><span class="icon">📋</span> Orders <span class="badge-count" id="ordersPendingBadge">0</span></a></li>
                 <li><a onclick="showSection('all-orders')"><span class="icon">📋</span> All Orders</a></li>
                 <li><a onclick="showSection('samples')"><span class="icon">🔬</span> Sample Requests</a></li>
                 <li><a onclick="showSection('po-approvals')"><span class="icon">📄</span> PO Approvals</a></li>
@@ -1844,25 +1844,121 @@
 
 +    <script>
         // ===================== DATA =====================
-        // Customer Orders
-        let customerOrders = JSON.parse(localStorage.getItem('customerOrders')) || [
-            { id: 'CUST-001', customer: 'John Doe', product: 'Cinnamon', qty: 25, amount: 11250, status: 'Delivered', payment: 'Online', date: '2026-01-15' },
-            { id: 'CUST-002', customer: 'Mary Smith', product: 'Black Pepper', qty: 15, amount: 11700, status: 'Processing', payment: 'COD', date: '2026-02-10' },
-            { id: 'CUST-003', customer: 'ABC Wholesale', product: 'Turmeric', qty: 100, amount: 32000, status: 'Pending', payment: 'Online', date: '2026-03-05' },
-            { id: 'CUST-004', customer: 'David Perera', product: 'Cardamom', qty: 10, amount: 28000, status: 'Delivered', payment: 'COD', date: '2026-01-20' },
-            { id: 'CUST-005', customer: 'Sarah Kumar', product: 'Cloves', qty: 30, amount: 15000, status: 'Rejected', payment: 'Online', date: '2026-02-15' }
-        ];
+        // Orders are read from the server (api/get_orders.php) and never from
+        // localStorage. Every role writes to the same `orders` table, which is
+        // what makes a customer's or wholesaler's order visible here at all -
+        // the old localStorage copies were per-browser-origin and per-role, so
+        // an order placed on the customer dashboard could never reach this one.
+        let serverOrders = [];      // raw rows, exactly as the API returns them
+        let customerOrders = [];    // derived view used by the renderers below
+        let wholesalerOrders = [];
 
-        // Supplier Orders
-        let supplierOrders = JSON.parse(localStorage.getItem('supplierOrders')) || [
-            { id: 'SUPP-001', supplier: 'Lanka Spices', material: 'Cinnamon', qty: 200, amount: 90000, status: 'Delivered', date: '2026-01-10' },
-            { id: 'SUPP-002', supplier: 'Kalutara Farmers', material: 'Turmeric', qty: 150, amount: 52500, status: 'Processing', date: '2026-02-20' },
-            { id: 'SUPP-003', supplier: 'Ceylon Pepper Co', material: 'Black Pepper', qty: 100, amount: 78000, status: 'Pending', date: '2026-03-01' },
-            { id: 'SUPP-004', supplier: 'Spice Garden', material: 'Cardamom', qty: 50, amount: 140000, status: 'Delivered', date: '2026-01-25' }
-        ];
+        // Supplier Orders (purchase orders to suppliers) still come from the
+        // Purchase Order backend - see loadPurchaseOrders().
+        let supplierOrders = [];
 
-        // Wholesaler Orders
-        let wholesalerOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || [];
+        // ---- Server order helpers -------------------------------------------
+        // Maps the DB's lowercase workflow columns onto the Title-Case labels
+        // this dashboard's renderers and status CSS classes already use.
+        function orderStageLabel(o) {
+            if (o.manager_approval === 'rejected' || o.stock_clerk_approval === 'rejected') return 'Rejected';
+            if (o.manager_approval === 'pending') return 'Pending';
+            if (o.delivery_status === 'delivered') return 'Delivered';
+            if (o.stock_clerk_approval === 'pending') return 'Approved';
+            if (o.delivery_status === 'shipped' || o.delivery_status === 'processing') return 'Processing';
+            return 'Approved';
+        }
+
+        function orderItemsSummary(o) {
+            if (!o.items || !o.items.length) return 'No items';
+            return o.items.map(i => i.product_name).join(', ');
+        }
+
+        function orderTotalQty(o) {
+            if (!o.items || !o.items.length) return 0;
+            return o.items.reduce((s, i) => s + Number(i.quantity), 0);
+        }
+
+        function toManagerOrder(o) {
+            return {
+                orderId: Number(o.order_id),
+                id: o.order_code,
+                type: o.order_type === 'wholesaler' ? 'Wholesaler' : 'Customer',
+                customer: o.party_name,
+                wholesalerName: o.party_name,
+                product: orderItemsSummary(o),
+                qty: orderTotalQty(o),
+                amount: Number(o.total_amount),
+                total: Number(o.total_amount),
+                delivery: Number(o.shipping_amount || 0),
+                deliveryRegion: o.delivery_region || 'N/A',
+                payment: o.payment_method || 'Not selected',
+                paymentStatus: o.payment_status,
+                deliveryStatus: o.delivery_status,
+                managerApproval: o.manager_approval,
+                stockApproval: o.stock_clerk_approval,
+                status: orderStageLabel(o),
+                reason: o.rejection_reason || '',
+                date: (o.order_date || '').split(' ')[0],
+                items: (o.items || []).map(i => ({
+                    name: i.product_name,
+                    quantity: Number(i.quantity),
+                    pricePerKg: Number(i.unit_price),
+                    total: Number(i.line_total)
+                }))
+            };
+        }
+
+        // Single fetch that feeds the Dashboard, Orders, Wholesaler Orders,
+        // All Orders and Reports sections.
+        async function loadServerOrders() {
+            try {
+                const r = await fetch('../../api/get_orders.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleAuthFailure(); return false; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_orders.php:', data.message); return false; }
+
+                serverOrders = data.orders || [];
+                const mapped = serverOrders.map(toManagerOrder);
+                customerOrders = mapped.filter(o => o.type === 'Customer');
+                wholesalerOrders = mapped.filter(o => o.type === 'Wholesaler');
+                return true;
+            } catch (e) {
+                console.error('Failed to load orders:', e);
+                return false;
+            }
+        }
+
+        // Every approve/reject/status action on this page goes through
+        // api/update_order_status.php, which enforces the stage order
+        // (manager -> stock clerk -> delivery -> payment) server-side.
+        async function updateOrderStage(orderId, fields) {
+            try {
+                const r = await fetch('../../api/update_order_status.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(Object.assign({ order_id: orderId }, fields))
+                });
+                if (r.status === 401 || r.status === 403) { handleAuthFailure(); return null; }
+                const data = await r.json();
+                if (!data.success) { alert('❌ ' + (data.message || 'Could not update the order')); return null; }
+                return data;
+            } catch (e) {
+                alert('❌ Could not reach the server: ' + e.message);
+                return null;
+            }
+        }
+
+        // Re-reads orders from the server and repaints whatever is on screen.
+        async function refreshOrderViews() {
+            await loadServerOrders();
+            renderDashboard();
+            renderWholesalerOrders();
+            renderOrderApproval();
+            renderAllOrders();
+        }
+
 
         // Every backend call on this page runs against the real PHP session,
         // not the localStorage flag the sidebar/greeting are drawn from - so
@@ -2020,19 +2116,47 @@
         let purchaseOrders = [];
         let grns = JSON.parse(localStorage.getItem('grns')) || [];
 
-        let sampleOrders = [
-            { id: 'ORD001', customer: 'John Doe', product: 'Cinnamon', qty: 25, amount: 11250, status: 'Pending', payment: 'Online' },
-            { id: 'ORD002', customer: 'ABC Wholesale', product: 'Tea', qty: 100, amount: 32000, status: 'Processing', payment: 'COD' },
-            { id: 'ORD003', customer: 'Mary Smith', product: 'Pepper', qty: 15, amount: 11700, status: 'Delivered', payment: 'COD' }
-        ];
+        // The real product catalogue (api/get_products.php) - the same rows the
+        // customer and wholesaler shops sell from and that create_order.php
+        // decrements. The low-stock panel and the Product/Stock reports are
+        // only meaningful against these, not against a localStorage copy.
+        let products = [];
 
-        let products = JSON.parse(localStorage.getItem('managerProducts')) || [
-            { code: 'P001', name: 'Cinnamon', category: 'Spice', price: 450, stock: 150, minStock: 50, totalSales: 125 },
-            { code: 'P002', name: 'Tea', category: 'Beverage', price: 320, stock: 200, minStock: 100, totalSales: 80 },
-            { code: 'P003', name: 'Black Pepper', category: 'Spice', price: 780, stock: 8, minStock: 20, totalSales: 45 },
-            { code: 'P004', name: 'Turmeric', category: 'Spice', price: 540, stock: 60, minStock: 30, totalSales: 95 },
-            { code: 'P005', name: 'Cardamom', category: 'Spice', price: 2800, stock: 25, minStock: 30, totalSales: 20 }
-        ];
+        async function loadServerProducts() {
+            try {
+                const r = await fetch('../../api/get_products.php?status=all', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleAuthFailure(); return false; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_products.php:', data.message); return false; }
+
+                products = (data.products || []).map(p => ({
+                    id: Number(p.product_id),
+                    code: p.product_code,
+                    name: p.name,
+                    category: p.category || '-',
+                    price: Number(p.price),
+                    wholesalePrice: p.wholesale_price === null ? null : Number(p.wholesale_price),
+                    stock: Number(p.current_stock),
+                    minStock: Number(p.reorder_level),
+                    status: p.status,
+                    totalSales: 0
+                }));
+
+                // Units sold per product, from the real order lines.
+                const sold = {};
+                serverOrders.forEach(o => {
+                    if (o.manager_approval === 'rejected') return;
+                    (o.items || []).forEach(i => {
+                        sold[i.product_id] = (sold[i.product_id] || 0) + Number(i.quantity);
+                    });
+                });
+                products.forEach(p => { p.totalSales = sold[p.id] || 0; });
+                return true;
+            } catch (e) {
+                console.error('Failed to load products:', e);
+                return false;
+            }
+        }
 
         // ===================== SUPPLIER REGISTRATION DATA =====================
         let supplierRegistrations = JSON.parse(localStorage.getItem('registered_users')) || [];
@@ -2040,11 +2164,11 @@
         let suppliers = JSON.parse(localStorage.getItem('managerSuppliers')) || [];
 
         // ===================== SAVE FUNCTIONS =====================
+        // Orders and products live on the server now (api/get_orders.php,
+        // api/get_products.php) - persisting stale copies here is what let the
+        // dashboards drift apart, so only the not-yet-migrated supplier
+        // registration data is cached.
         function saveAllData() {
-            localStorage.setItem('customerOrders', JSON.stringify(customerOrders));
-            localStorage.setItem('supplierOrders', JSON.stringify(supplierOrders));
-            localStorage.setItem('wholesalerOrders', JSON.stringify(wholesalerOrders));
-            localStorage.setItem('managerProducts', JSON.stringify(products));
             localStorage.setItem('managerSuppliers', JSON.stringify(suppliers));
             localStorage.setItem('registered_users', JSON.stringify(supplierRegistrations));
             localStorage.setItem('pending_registrations', JSON.stringify(pendingRegistrations));
@@ -2124,9 +2248,12 @@
                     el.classList.add('active');
                 }
             });
+            if (['dashboard', 'wholesaler-orders', 'orders', 'all-orders'].includes(section)) {
+                await loadServerOrders();
+            }
             if (section === 'dashboard') renderDashboard();
             if (section === 'wholesaler-orders') renderWholesalerOrders();
-            if (section === 'orders') renderOrders();
+            if (section === 'orders') renderOrderApproval();
             if (section === 'all-orders') renderAllOrders();
             if (section === 'samples') { await loadSampleData(); renderSamples(); }
             if (section === 'po-approvals') { await loadPurchaseOrders(); renderPOs(); }
@@ -2139,16 +2266,19 @@
 
         // ===================== DASHBOARD =====================
         function renderDashboard() {
-            const totalOrders = sampleOrders.length + customerOrders.length + supplierOrders.length + wholesalerOrders.length;
-            const pendingWholesaler = wholesalerOrders.filter(o => o.status === 'Pending').length;
-            const totalRevenue = sampleOrders.reduce((s, o) => s + o.amount, 0) + 
-                               customerOrders.reduce((s, o) => s + o.amount, 0) +
-                               supplierOrders.reduce((s, o) => s + o.amount, 0) +
-                               wholesalerOrders.filter(o => o.status === 'Approved' || o.status === 'Delivered').reduce((s, o) => s + (o.total || 0), 0);
-            
+            const totalOrders = serverOrders.length + supplierOrders.length;
+            const pendingWholesaler = wholesalerOrders.filter(o => o.managerApproval === 'pending').length;
+            const pendingCustomer = customerOrders.filter(o => o.managerApproval === 'pending').length;
+
+            // Revenue counts approved orders only - a pending or rejected
+            // order is not money the business has earned.
+            const totalRevenue = [...customerOrders, ...wholesalerOrders]
+                .filter(o => o.managerApproval === 'approved')
+                .reduce((s, o) => s + o.amount, 0);
+
             loadSupplierRegistrations();
             const pendingSuppliers = pendingRegistrations.filter(p => p.status === 'Pending').length;
-            
+
             document.getElementById('dashTotalOrders').textContent = totalOrders;
             document.getElementById('dashWholesalerPending').textContent = pendingWholesaler;
             document.getElementById('dashRevenue').textContent = 'Rs. ' + totalRevenue.toLocaleString();
@@ -2157,22 +2287,27 @@
             document.getElementById('dashPendingSuppliers').textContent = pendingSuppliers;
             document.getElementById('wholesalerPendingBadge').textContent = pendingWholesaler;
             document.getElementById('supplierPendingBadge').textContent = pendingSuppliers;
-            
+
+            const pendingBadge = document.getElementById('ordersPendingBadge');
+            if (pendingBadge) pendingBadge.textContent = pendingCustomer + pendingWholesaler;
+
             let recentHtml = '';
-            const allRecent = [...sampleOrders, ...customerOrders, ...supplierOrders].slice(0, 5);
-            allRecent.forEach(o => {
-                recentHtml += `<tr>
-                    <td>${o.id}</td>
-                    <td>${o.customer || o.supplier || 'N/A'}</td>
-                    <td>${o.type || 'Customer'}</td>
-                    <td>Rs. ${(o.amount || 0).toLocaleString()}</td>
-                    <td><span class="status-badge status-${(o.status || 'pending').toLowerCase()}">${o.status || 'Pending'}</span></td>
-                </tr>`;
-            });
+            [...customerOrders, ...wholesalerOrders]
+                .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.orderId - a.orderId)
+                .slice(0, 5)
+                .forEach(o => {
+                    recentHtml += `<tr>
+                        <td>${o.id}</td>
+                        <td>${o.customer}</td>
+                        <td>${o.type}</td>
+                        <td>Rs. ${o.amount.toLocaleString()}</td>
+                        <td><span class="status-badge status-${o.status.toLowerCase()}">${o.status}</span></td>
+                    </tr>`;
+                });
             document.querySelector('#recentOrdersTable tbody').innerHTML = recentHtml || '<tr><td colspan="5">No recent orders</td></tr>';
 
             let stockHtml = '';
-            const lowStock = products.filter(p => p.stock < p.minStock);
+            const lowStock = products.filter(p => Number(p.stock) < Number(p.minStock));
             lowStock.forEach(p => {
                 stockHtml += `<tr><td>${p.name}</td><td>${p.stock}kg</td><td>${p.minStock}kg</td>
                     <td><span class="status-badge status-rejected">⚠️ Low</span></td></tr>`;
@@ -2186,22 +2321,22 @@
         function renderWholesalerOrders() {
             const container = document.getElementById('wholesalerOrdersContainer');
             
-            let filteredOrders = [];
-            if (wholesalerTab === 'pending') {
-                filteredOrders = wholesalerOrders.filter(o => o.status === 'Pending');
-            } else if (wholesalerTab === 'approved') {
-                filteredOrders = wholesalerOrders.filter(o => o.status === 'Approved');
-            } else if (wholesalerTab === 'rejected') {
-                filteredOrders = wholesalerOrders.filter(o => o.status === 'Rejected');
-            } else if (wholesalerTab === 'delivered') {
-                filteredOrders = wholesalerOrders.filter(o => o.status === 'Delivered');
-            }
+            // Tabs are keyed off the workflow columns rather than the display
+            // label, so an order sitting in Processing/Shipped still shows under
+            // "Approved" instead of disappearing from every tab.
+            const inTab = {
+                pending: o => o.managerApproval === 'pending',
+                approved: o => o.managerApproval === 'approved' && o.deliveryStatus !== 'delivered' && o.status !== 'Rejected',
+                rejected: o => o.status === 'Rejected',
+                delivered: o => o.deliveryStatus === 'delivered'
+            };
+            const filteredOrders = wholesalerOrders.filter(inTab[wholesalerTab] || (() => true));
 
-            document.getElementById('wholesalerPendingTabCount').textContent = wholesalerOrders.filter(o => o.status === 'Pending').length;
-            document.getElementById('wholesalerApprovedTabCount').textContent = wholesalerOrders.filter(o => o.status === 'Approved').length;
-            document.getElementById('wholesalerRejectedTabCount').textContent = wholesalerOrders.filter(o => o.status === 'Rejected').length;
-            document.getElementById('wholesalerDeliveredTabCount').textContent = wholesalerOrders.filter(o => o.status === 'Delivered').length;
-            document.getElementById('wholesalerPendingBadge').textContent = wholesalerOrders.filter(o => o.status === 'Pending').length;
+            document.getElementById('wholesalerPendingTabCount').textContent = wholesalerOrders.filter(inTab.pending).length;
+            document.getElementById('wholesalerApprovedTabCount').textContent = wholesalerOrders.filter(inTab.approved).length;
+            document.getElementById('wholesalerRejectedTabCount').textContent = wholesalerOrders.filter(inTab.rejected).length;
+            document.getElementById('wholesalerDeliveredTabCount').textContent = wholesalerOrders.filter(inTab.delivered).length;
+            document.getElementById('wholesalerPendingBadge').textContent = wholesalerOrders.filter(inTab.pending).length;
 
             if (filteredOrders.length === 0) {
                 container.innerHTML = `<div class="empty-state"><span class="icon">📭</span><p>No ${wholesalerTab} wholesaler orders found</p></div>`;
@@ -2218,7 +2353,8 @@
 
                 let timelineHtml = `<div class="timeline">`;
                 const steps = ['Order Placed', 'Manager Approval', 'Stock Processing', 'Delivered'];
-                const statusMap = { 'Pending': ['Order Placed'], 'Approved': ['Order Placed', 'Manager Approval'], 
+                const statusMap = { 'Pending': ['Order Placed'], 'Approved': ['Order Placed', 'Manager Approval'],
+                                   'Processing': ['Order Placed', 'Manager Approval', 'Stock Processing'],
                                    'Delivered': ['Order Placed', 'Manager Approval', 'Stock Processing', 'Delivered'], 'Rejected': ['Order Placed'] };
                 const completedSteps = statusMap[order.status] || ['Order Placed'];
                 steps.forEach((step, index) => {
@@ -2236,6 +2372,8 @@
                     `;
                 } else if (order.status === 'Approved') {
                     actionsHtml = `<span class="status-text approved">✅ Approved - Waiting for Stock Clerk</span>`;
+                } else if (order.status === 'Processing') {
+                    actionsHtml = `<span class="status-text approved">📦 Released by Stock Clerk - ${order.deliveryStatus}</span>`;
                 } else if (order.status === 'Delivered') {
                     actionsHtml = `<span class="status-text delivered">📦 Delivered</span>`;
                 } else if (order.status === 'Rejected') {
@@ -2277,96 +2415,144 @@
             renderWholesalerOrders();
         }
 
-        function refreshWholesalerOrders() {
-            wholesalerOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || [];
-            renderWholesalerOrders();
-            renderDashboard();
-            alert('✅ Wholesaler orders refreshed!');
+        async function refreshWholesalerOrders() {
+            await refreshOrderViews();
+            alert('✅ Wholesaler orders refreshed from the server!');
         }
 
-        function approveWholesalerOrder(orderId) {
-            const order = wholesalerOrders.find(o => o.id === orderId);
+        // Approve / reject are the same server call for both order types -
+        // the manager stage of api/update_order_status.php. Approving hands
+        // the order to the stock clerk; rejecting cancels it and returns the
+        // reserved stock to the shelf.
+        async function approveOrderByCode(orderCode) {
+            const order = [...customerOrders, ...wholesalerOrders].find(o => o.id === orderCode);
             if (!order) { alert('Order not found!'); return; }
 
-            if (confirm(`Approve wholesaler order ${orderId}?\n\nThis will forward it to Stock Clerk for delivery.`)) {
-                order.status = 'Approved';
-                order.approvedDate = new Date().toISOString().split('T')[0];
-                saveAllData();
+            if (!confirm(`Approve ${order.type.toLowerCase()} order ${order.id}?\n\nTotal: Rs. ${order.amount.toLocaleString()}\n\nThis forwards it to the Stock Clerk.`)) return;
 
-                let stockNotifications = JSON.parse(localStorage.getItem('stockNotifications')) || [];
-                stockNotifications.push({
-                    orderId: order.id,
-                    message: `New order ${order.id} from wholesaler approved for delivery. Total: Rs. ${order.total.toLocaleString()}`,
-                    date: new Date().toISOString(),
-                    read: false,
-                    type: 'wholesaler_delivery'
-                });
-                localStorage.setItem('stockNotifications', JSON.stringify(stockNotifications));
+            const res = await updateOrderStage(order.orderId, { manager_approval: 'approved' });
+            if (!res) return;
 
-                let userMessages = JSON.parse(localStorage.getItem('userMessages')) || [];
-                userMessages.push({
-                    orderId: order.id,
-                    message: `✅ Your order ${order.id} has been approved by Manager. Stock Clerk will process delivery soon.`,
-                    date: new Date().toISOString().split('T')[0],
-                    recipientType: 'Wholesaler',
-                    type: 'approved'
-                });
-                localStorage.setItem('userMessages', JSON.stringify(userMessages));
-
-                renderWholesalerOrders();
-                renderDashboard();
-                alert(`✅ Order ${orderId} approved and forwarded to Stock Clerk!`);
-            }
+            await refreshOrderViews();
+            alert(`✅ Order ${order.id} approved and forwarded to the Stock Clerk.`);
         }
 
-        function openRejectModal(orderId) {
-            document.getElementById('rejectOrderId').value = orderId;
-            document.getElementById('rejectReason').value = '';
-            document.getElementById('rejectModal').classList.add('show');
+        async function rejectOrderByCode(orderCode) {
+            const order = [...customerOrders, ...wholesalerOrders].find(o => o.id === orderCode);
+            if (!order) { alert('Order not found!'); return; }
+
+            const reason = prompt(`Reject order ${order.id}?\n\nReason for rejection:`, '');
+            if (reason === null) return;
+            if (!reason.trim()) { alert('A rejection reason is required.'); return; }
+
+            const res = await updateOrderStage(order.orderId, {
+                manager_approval: 'rejected',
+                rejection_reason: reason.trim()
+            });
+            if (!res) return;
+
+            await refreshOrderViews();
+            alert(`❌ Order ${order.id} rejected. The buyer has been notified and the stock returned.`);
         }
 
-        // ===================== ORDERS =====================
-        function renderOrders() {
+        // Kept as the name the wholesaler cards call.
+        function approveWholesalerOrder(orderCode) { return approveOrderByCode(orderCode); }
+        function openRejectModal(orderCode) { return rejectOrderByCode(orderCode); }
+
+        // ===================== ORDERS (APPROVAL QUEUE) =====================
+        // This section used to render a hardcoded `sampleOrders` demo array
+        // with Approve/Reject buttons that only popped an alert(), which is
+        // why no customer order was ever approvable here. It now renders the
+        // real orders table and posts real decisions.
+        let orderApprovalTab = 'all';
+
+        function showOrderTab(tab) {
+            orderApprovalTab = tab;
+            const tabMap = { 'all': 'allOrdersTab', 'today': 'todayOrdersTab', 'pending': 'pendingOrdersTab' };
+            document.querySelectorAll('#ordersSection .section-tabs .btn-secondary').forEach(btn => btn.classList.remove('active'));
+            const btn = document.getElementById(tabMap[tab]);
+            if (btn) btn.classList.add('active');
+            renderOrderApproval();
+        }
+
+        function renderOrderApproval() {
+            const body = document.getElementById('orderApprovalBody');
+            if (!body) return;
+
+            const today = new Date().toISOString().split('T')[0];
+            const typeFilter = document.getElementById('orderTypeFilter')?.value || 'all';
+
+            let rows = [...customerOrders, ...wholesalerOrders];
+            if (typeFilter !== 'all') rows = rows.filter(o => o.type === typeFilter);
+            if (orderApprovalTab === 'today') rows = rows.filter(o => o.date === today);
+            if (orderApprovalTab === 'pending') rows = rows.filter(o => o.managerApproval === 'pending');
+            rows.sort((a, b) => b.orderId - a.orderId);
+
+            const allRows = [...customerOrders, ...wholesalerOrders];
+            document.getElementById('todayOrdersCount').textContent = allRows.filter(o => o.date === today).length;
+            document.getElementById('pendingOrdersCount').textContent = allRows.filter(o => o.managerApproval === 'pending').length;
+
             let html = '';
-            sampleOrders.forEach(o => {
-                let paymentBadge = o.payment === 'COD' ? '<span class="payment-badge cod">💵 COD</span>' : '<span class="payment-badge online">💳 Online</span>';
+            rows.forEach(o => {
+                const first = o.items[0];
+                const paymentBadge = /cash|cod/i.test(o.payment)
+                    ? '<span class="payment-badge cod">💵 ' + o.payment + '</span>'
+                    : '<span class="payment-badge online">💳 ' + o.payment + '</span>';
+
+                // Stock was already reserved when the order was placed, so an
+                // order that made it this far is always covered; a rejection
+                // hands it back.
+                const stockStatus = o.status === 'Rejected'
+                    ? '<span class="status-badge status-rejected">Released</span>'
+                    : '<span class="status-badge status-approved">Reserved</span>';
+
+                let actions;
+                if (o.managerApproval === 'pending') {
+                    actions = `<button class="action-btn btn-approve" onclick="approveOrderByCode('${o.id}')">✅ Approve</button>
+                               <button class="action-btn btn-reject" onclick="rejectOrderByCode('${o.id}')">❌ Reject</button>`;
+                } else if (o.managerApproval === 'rejected') {
+                    actions = `<span class="status-text rejected">❌ Rejected${o.reason ? ' - ' + o.reason : ''}</span>`;
+                } else if (o.stockApproval === 'pending') {
+                    actions = `<span class="status-text approved">✅ Approved - awaiting Stock Clerk</span>`;
+                } else {
+                    actions = `<span class="status-text delivered">📦 ${o.deliveryStatus}</span>`;
+                }
+
                 html += `<tr>
-                    <td>${o.id}</td><td>${o.customer}</td><td>${o.product}</td>
-                    <td>${o.qty}kg</td><td>Rs.${o.amount}</td>
-                    <td>${paymentBadge}</td>
+                    <td>${o.id}</td>
+                    <td>${o.customer}</td>
+                    <td><span class="status-badge ${o.type === 'Wholesaler' ? 'status-processing' : ''}">${o.type}</span></td>
+                    <td>${o.product}</td>
+                    <td>${o.qty} kg</td>
+                    <td>Rs. ${first ? first.pricePerKg.toLocaleString() : '-'}</td>
+                    <td>Rs. ${(o.items.reduce((s, i) => s + i.pricePerKg * i.quantity, 0) - o.amount + o.delivery).toFixed(2)}</td>
+                    <td>${stockStatus}</td>
                     <td><span class="status-badge status-${o.status.toLowerCase()}">${o.status}</span></td>
-                    <td><button class="action-btn btn-approve" onclick="approveOrder('${o.id}')">Approve</button>
-                    <button class="action-btn btn-reject" onclick="rejectOrder('${o.id}')">Reject</button></td>
+                    <td>${paymentBadge}<br><span style="font-size:11px;color:#666;">${o.paymentStatus}</span></td>
+                    <td>${actions}</td>
                 </tr>`;
             });
-            document.getElementById('orderApprovalBody').innerHTML = html || '<tr><td colspan="11">No orders</td></tr>';
+
+            body.innerHTML = html || '<tr><td colspan="11" style="text-align:center;padding:20px;color:#999;">No orders found</td></tr>';
         }
 
-        function approveOrder(id) { alert('✅ Order ' + id + ' approved!'); }
-        function rejectOrder(id) { alert('❌ Order ' + id + ' rejected!'); }
+        // renderOrders() is still called from showSection()/init - keep it as
+        // the alias for the approval queue.
+        function renderOrders() { renderOrderApproval(); }
 
         // ===================== ALL ORDERS =====================
         function renderAllOrders() {
             const typeFilter = document.getElementById('allOrderTypeFilter').value;
             const statusFilter = document.getElementById('allOrderStatusFilter').value;
 
-            let allOrders = [];
-
-            customerOrders.forEach(o => {
-                allOrders.push({ id: o.id, name: o.customer, type: 'Customer', product: o.product, qty: o.qty, 
-                                amount: o.amount, payment: o.payment || 'N/A', status: o.status, date: o.date || 'N/A' });
-            });
+            let allOrders = [...customerOrders, ...wholesalerOrders].map(o => ({
+                id: o.id, name: o.customer, type: o.type, product: o.product, qty: o.qty,
+                amount: o.amount, payment: o.payment, status: o.status, date: o.date || 'N/A'
+            }));
 
             supplierOrders.forEach(o => {
-                allOrders.push({ id: o.id, name: o.supplier, type: 'Supplier', product: o.material, qty: o.qty, 
+                allOrders.push({ id: o.id, name: o.supplier, type: 'Supplier', product: o.material, qty: o.qty,
                                 amount: o.amount, payment: 'N/A', status: o.status, date: o.date || 'N/A' });
-            });
-
-            wholesalerOrders.forEach(o => {
-                allOrders.push({ id: o.id, name: o.wholesalerName || 'Wholesaler', type: 'Wholesaler', 
-                                product: o.items ? o.items.map(i => i.name).join(', ') : 'N/A',
-                                qty: o.items ? o.items.reduce((s, i) => s + i.quantity, 0) : 0,
-                                amount: o.total || 0, payment: 'N/A', status: o.status || 'Pending', date: o.date || 'N/A' });
             });
 
             if (typeFilter !== 'all') {
@@ -2375,6 +2561,7 @@
             if (statusFilter !== 'all') {
                 allOrders = allOrders.filter(o => o.status.toLowerCase() === statusFilter);
             }
+            allOrders.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
             let html = '';
             if (allOrders.length === 0) {
@@ -2746,28 +2933,42 @@
             document.getElementById('productModal').style.display = 'flex';
         }
 
-        document.getElementById('productForm').addEventListener('submit', function(e) {
+        // Saves to the real catalogue. Writing this to localStorage instead
+        // meant an edited price or stock level never reached the shops the
+        // customers and wholesalers actually order from.
+        document.getElementById('productForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const code = document.getElementById('editProductCode').value;
-            const name = document.getElementById('productName').value;
-            const category = document.getElementById('productCategory').value;
-            const price = parseFloat(document.getElementById('productPrice').value);
-            const stock = parseFloat(document.getElementById('productStock').value);
-            const minStock = parseFloat(document.getElementById('productMinStock').value);
+            const payload = {
+                name: document.getElementById('productName').value,
+                category: document.getElementById('productCategory').value,
+                price: parseFloat(document.getElementById('productPrice').value),
+                current_stock: parseFloat(document.getElementById('productStock').value),
+                reorder_level: parseFloat(document.getElementById('productMinStock').value)
+            };
 
-            if (code) {
-                const product = products.find(p => p.code === code);
-                if (product) {
-                    product.name = name; product.category = category; product.price = price; product.stock = stock; product.minStock = minStock;
-                }
-            } else {
-                const newCode = 'P' + String(products.length + 1).padStart(3, '0');
-                products.push({ code: newCode, name, category, price, stock, minStock, totalSales: 0 });
+            const endpoint = code ? 'update_product.php' : 'add_product.php';
+            if (code) payload.product_code = code;
+
+            try {
+                const r = await fetch('../../api/' + endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload)
+                });
+                if (r.status === 401 || r.status === 403) { handleAuthFailure(); return; }
+                const data = await r.json();
+                if (!data.success) { alert('❌ ' + (data.message || 'Could not save the product')); return; }
+
+                await loadServerProducts();
+                closeModal('productModal');
+                renderProducts();
+                renderDashboard();
+                alert(`✅ Product ${code ? code + ' updated' : 'added'} successfully!`);
+            } catch (err) {
+                alert('❌ Could not reach the server: ' + err.message);
             }
-            localStorage.setItem('managerProducts', JSON.stringify(products));
-            closeModal('productModal');
-            renderProducts();
-            alert(`✅ Product ${code || 'added'} successfully!`);
         });
 
         // ===================== SUPPLIERS =====================
@@ -3063,16 +3264,56 @@
         }
 
         // ===================== REPORTS =====================
+        // Reports are generated server-side by api/manager_reports.php, which
+        // aggregates the live orders / order_items / payments / products
+        // tables for the selected range. Previously every figure below was
+        // computed from the demo arrays in localStorage, so "updating" a
+        // report changed nothing a manager could act on.
         let reportFrom = '2026-01-01';
         let reportTo = new Date().toISOString().split('T')[0];
+        let reportData = null;
 
-        function setReportDates() {
-            reportFrom = document.getElementById('reportFrom').value;
-            reportTo = document.getElementById('reportTo').value || new Date().toISOString().split('T')[0];
-            alert(`📅 Report dates set: ${reportFrom} to ${reportTo}`);
+        async function loadReportData() {
+            try {
+                const url = `../../api/manager_reports.php?from=${encodeURIComponent(reportFrom)}&to=${encodeURIComponent(reportTo)}`;
+                const r = await fetch(url, { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleAuthFailure(); return false; }
+                const data = await r.json();
+                if (!data.success) { alert('❌ ' + (data.message || 'Could not generate the report')); return false; }
+                reportData = data;
+                return true;
+            } catch (e) {
+                alert('❌ Could not reach the server: ' + e.message);
+                return false;
+            }
         }
 
-        function openReport(type) {
+        async function setReportDates() {
+            reportFrom = document.getElementById('reportFrom').value || reportFrom;
+            reportTo = document.getElementById('reportTo').value || new Date().toISOString().split('T')[0];
+            if (reportFrom > reportTo) {
+                alert('⚠️ The "From" date cannot be after the "To" date.');
+                return;
+            }
+
+            const ok = await loadReportData();
+            if (!ok) return;
+
+            const s = reportData.summary;
+            alert(`📅 Reports updated for ${reportFrom} to ${reportTo}\n\n` +
+                  `Orders: ${s.total_orders}  (${s.pending_approval} awaiting your approval)\n` +
+                  `Approved value: Rs. ${Number(s.approved_order_value).toLocaleString()}\n` +
+                  `Delivered: ${s.delivered}   Outstanding: Rs. ${Number(s.unpaid_value).toLocaleString()}`);
+        }
+
+        async function openReport(type) {
+            // Always regenerate against the server so a report can never show
+            // a figure that is older than the dashboard it was opened from.
+            if (!(await loadReportData())) return;
+            renderReport(type);
+        }
+
+        function renderReport(type) {
             const viewer = document.getElementById('reportViewer');
             const body = document.getElementById('reportBody');
             const title = document.getElementById('reportTitle');
@@ -3104,9 +3345,15 @@
                 });
             }
 
-            const filteredCustomerOrders = filterByDate(customerOrders, 'date');
+            // Orders/payments/product figures come straight from the server's
+            // aggregate for this date range; samples, QC and purchase orders
+            // still come from their own (already backend-loaded) collections.
+            const reportOrders = (reportData?.orders || []).map(toManagerOrder);
+            const filteredCustomerOrders = reportOrders.filter(o => o.type === 'Customer');
+            const filteredWholesalerOrders = reportOrders.filter(o => o.type === 'Wholesaler');
+            const reportPayments = reportData?.payments || [];
+            const reportProducts = reportData?.inventory || [];
             const filteredSupplierOrders = filterByDate(supplierOrders, 'date');
-            const filteredWholesalerOrders = filterByDate(wholesalerOrders, 'date');
             const filteredPOs = filterByDate(purchaseOrders, 'createdAt');
             const filteredSamples = filterByDate(sampleRequests, 'requestDate');
             const filteredQC = filterByDate(qcReports, 'testDate');
@@ -3173,23 +3420,44 @@
                     </table>
                 `;
             } else if (type === 'payment') {
-                let paid = filteredPOs.filter(p => p.paymentStatus === 'Paid').length;
-                let pending = filteredPOs.filter(p => p.paymentStatus === 'Pending' || !p.paymentStatus).length;
-                let overdue = filteredPOs.filter(p => p.paymentStatus === 'Overdue').length;
-                let totalAmount = filteredPOs.reduce((s, p) => s + p.total, 0);
+                // Money in (customer/wholesaler collections recorded by the
+                // account clerk) alongside money out (supplier POs).
+                const collected = reportPayments.filter(p => p.status === 'paid');
+                const collectedTotal = collected.reduce((s, p) => s + Number(p.amount), 0);
+                const custTotal = collected.filter(p => p.payment_type === 'customer').reduce((s, p) => s + Number(p.amount), 0);
+                const wholeTotal = collected.filter(p => p.payment_type === 'wholesaler').reduce((s, p) => s + Number(p.amount), 0);
+                const outstanding = Number(reportData.summary.unpaid_value);
+                const poTotal = filteredPOs.reduce((s, p) => s + p.total, 0);
 
                 html = `
                     <div style="margin-bottom:15px;font-size:12px;color:#666;">Report Period: <strong>${reportFrom}</strong> to <strong>${reportTo}</strong></div>
                     <div class="report-summary-cards">
-                        <div class="report-summary-card"><div class="r-value">${filteredPOs.length}</div><div class="r-label">Total POs</div></div>
-                        <div class="report-summary-card green-border"><div class="r-value">${paid}</div><div class="r-label">✅ Paid</div></div>
-                        <div class="report-summary-card orange-border"><div class="r-value">${pending}</div><div class="r-label">⏳ Pending</div></div>
-                        <div class="report-summary-card red-border"><div class="r-value">${overdue}</div><div class="r-label">⚠️ Overdue</div></div>
-                        <div class="report-summary-card"><div class="r-value">Rs. ${totalAmount.toLocaleString()}</div><div class="r-label">Total Amount</div></div>
+                        <div class="report-summary-card green-border"><div class="r-value">Rs. ${collectedTotal.toLocaleString()}</div><div class="r-label">💰 Collected</div></div>
+                        <div class="report-summary-card"><div class="r-value">Rs. ${custTotal.toLocaleString()}</div><div class="r-label">👤 From Customers</div></div>
+                        <div class="report-summary-card"><div class="r-value">Rs. ${wholeTotal.toLocaleString()}</div><div class="r-label">🏪 From Wholesalers</div></div>
+                        <div class="report-summary-card red-border"><div class="r-value">Rs. ${outstanding.toLocaleString()}</div><div class="r-label">⚠️ Outstanding</div></div>
+                        <div class="report-summary-card orange-border"><div class="r-value">Rs. ${poTotal.toLocaleString()}</div><div class="r-label">🚚 Supplier POs</div></div>
                     </div>
-                    <h4 style="color:var(--primary-green);margin-bottom:10px;">💳 Payment Details</h4>
+
+                    <h4 style="color:var(--primary-green);margin-bottom:10px;">💳 Payments Received</h4>
                     <table class="report-table">
-                        <thead><tr><th>PO #</th><th>Supplier</th><th>Material</th><th>Amount</th><th>Payment Terms</th><th>Payment Status</th></tr></thead>
+                        <thead><tr><th>Date</th><th>Order</th><th>Party</th><th>Type</th><th>Method</th><th>Amount</th><th>Status</th></tr></thead>
+                        <tbody>
+                            ${reportPayments.map(p => `
+                                <tr><td>${p.payment_date || '-'}</td><td>${p.order_code || '-'}</td>
+                                <td>${p.party_name}</td>
+                                <td>${p.payment_type === 'wholesaler' ? 'Wholesaler' : 'Customer'}</td>
+                                <td>${p.payment_method || '-'}</td>
+                                <td>Rs. ${Number(p.amount).toLocaleString()}</td>
+                                <td><span class="status-badge ${p.status === 'paid' ? 'status-approved' : 'status-pending'}">${p.status}</span></td></tr>
+                            `).join('') || '<tr><td colspan="7" style="text-align:center;color:#999;">No payments recorded in this period</td></tr>'}
+                        </tbody>
+                        <tr class="total-row"><td colspan="5"><strong>TOTAL COLLECTED</strong></td><td><strong>Rs. ${collectedTotal.toLocaleString()}</strong></td><td></td></tr>
+                    </table>
+
+                    <h4 style="color:var(--primary-green);margin:18px 0 10px;">📄 Supplier Purchase Orders</h4>
+                    <table class="report-table">
+                        <thead><tr><th>PO #</th><th>Supplier</th><th>Material</th><th>Amount</th><th>Payment Terms</th><th>Status</th></tr></thead>
                         <tbody>
                             ${filteredPOs.map(p => `
                                 <tr><td>${p.id}</td><td>${p.supplier}</td><td>${p.material}</td>
@@ -3198,7 +3466,7 @@
                                 <td><span class="status-badge ${p.paymentStatus === 'Paid' ? 'status-approved' : p.paymentStatus === 'Overdue' ? 'status-rejected' : 'status-pending'}">${p.paymentStatus || 'Pending'}</span></td></tr>
                             `).join('') || '<tr><td colspan="6" style="text-align:center;color:#999;">No POs found</td></tr>'}
                         </tbody>
-                        <tr class="total-row"><td colspan="3"><strong>TOTAL</strong></td><td><strong>Rs. ${totalAmount.toLocaleString()}</strong></td><td colspan="2"></td></tr>
+                        <tr class="total-row"><td colspan="3"><strong>TOTAL</strong></td><td><strong>Rs. ${poTotal.toLocaleString()}</strong></td><td colspan="2"></td></tr>
                     </table>
                 `;
             } else if (type === 'summary') {
@@ -3439,7 +3707,8 @@
             html += `
                 <div style="margin-top:20px;padding-top:15px;border-top:2px solid #eee;font-size:12px;color:#888;">
                     <p>📅 Report Period: <strong>${reportFrom}</strong> to <strong>${reportTo}</strong></p>
-                    <p>📊 Total Records: ${customerOrders.length + supplierOrders.length + wholesalerOrders.length + purchaseOrders.length + sampleRequests.length}</p>
+                    <p>📊 Total Records: ${reportOrders.length + supplierOrders.length + purchaseOrders.length + sampleRequests.length}</p>
+                    <p>🗄️ Generated from live data at ${reportData?.generated_at ? new Date(reportData.generated_at).toLocaleString() : 'now'}</p>
                 </div>
             `;
 
@@ -3543,37 +3812,35 @@
         document.getElementById('reportTo').value = new Date().toISOString().split('T')[0];
 
         loadSupplierRegistrations();
-
-        renderDashboard();
-        renderWholesalerOrders();
-        renderOrders();
-        renderAllOrders();
-        renderSamples();
-        renderPOs();
-        renderProducts();
-        renderSuppliers();
         showSection('dashboard');
 
-        // Purchase Orders + Sample/QC data come from the real backend, not
-        // localStorage - load them once at startup, then refresh whatever
-        // depends on them.
+        // Orders, products, Purchase Orders and Sample/QC data all come from
+        // the backend - nothing on this page is rendered from a localStorage
+        // copy of another dashboard's state any more. Load once at startup,
+        // then repaint everything that depends on them.
         (async function initRealData() {
-            await Promise.all([loadPurchaseOrders(), loadSampleData(), loadRegisteredSuppliers()]);
+            await loadServerOrders();
+            await Promise.all([loadServerProducts(), loadPurchaseOrders(), loadSampleData(), loadRegisteredSuppliers()]);
+            renderDashboard();
+            renderWholesalerOrders();
+            renderOrderApproval();
+            renderAllOrders();
             renderPOs();
             renderSamples();
-            renderDashboard();
+            renderProducts();
+            renderSuppliers();
         })();
 
         setInterval(async () => {
-            customerOrders = JSON.parse(localStorage.getItem('customerOrders')) || customerOrders;
-            supplierOrders = JSON.parse(localStorage.getItem('supplierOrders')) || supplierOrders;
-            wholesalerOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || wholesalerOrders;
-            products = JSON.parse(localStorage.getItem('managerProducts')) || products;
-            await Promise.all([loadPurchaseOrders(), loadSampleData(), loadRegisteredSuppliers()]);
+            await loadServerOrders();
+            await Promise.all([loadServerProducts(), loadPurchaseOrders(), loadSampleData(), loadRegisteredSuppliers()]);
             loadSupplierRegistrations();
 
             if (document.getElementById('wholesaler-ordersSection').classList.contains('active')) {
                 renderWholesalerOrders();
+            }
+            if (document.getElementById('ordersSection').classList.contains('active')) {
+                renderOrderApproval();
             }
             if (document.getElementById('all-ordersSection').classList.contains('active')) {
                 renderAllOrders();
@@ -3583,6 +3850,9 @@
             }
             if (document.getElementById('samplesSection').classList.contains('active')) {
                 renderSamples();
+            }
+            if (document.getElementById('productsSection').classList.contains('active')) {
+                renderProducts();
             }
             renderDashboard();
         }, 10000);
