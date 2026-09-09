@@ -1152,12 +1152,30 @@ $rawMaterialsJSON = json_encode($rawMaterials);
             </div>
 
             <!-- ===== DELIVERY TAB ===== -->
+            <!--
+                Customer and wholesaler orders the manager has approved, read
+                live from the main application database (api/get_orders.php).
+                This tab used to list rows from stock_clerk_db.deliveries - a
+                table nothing in the ordering flow ever wrote to, so approved
+                orders never reached the stock clerk at all.
+            -->
             <div id="tab-delivery" class="tab-content">
                 <div class="alerts-section">
+                    <h2>✅ Orders Awaiting Stock Approval</h2>
+                    <p style="color:#666;font-size:13px;margin-bottom:12px;">
+                        Approved by the manager and waiting for you to release them for delivery.
+                    </p>
+                    <table class="data-table">
+                        <thead><tr><th>Order</th><th>Buyer</th><th>Type</th><th>Items</th><th>Qty</th><th>Total</th><th>Ordered</th><th>Action</th></tr></thead>
+                        <tbody id="order-approval-body"></tbody>
+                    </table>
+                </div>
+
+                <div class="alerts-section" style="margin-top:20px;">
                     <h2>🚚 Delivery Management</h2>
                     <div class="delivery-status-grid" id="delivery-status-summary"></div>
                     <table class="data-table">
-                        <thead><tr><th>Order ID</th><th>Product</th><th>Quantity</th><th>Order Date</th><th>Expected Date</th><th>Status</th><th>Action</th></tr></thead>
+                        <thead><tr><th>Order</th><th>Buyer</th><th>Items</th><th>Quantity</th><th>Order Date</th><th>Expected Date</th><th>Status</th><th>Payment</th></tr></thead>
                         <tbody id="delivery-status-body"></tbody>
                     </table>
                 </div>
@@ -1292,7 +1310,11 @@ $rawMaterialsJSON = json_encode($rawMaterials);
         const qcReports = <?php echo $qcReportsJSON; ?>;
         const pos = <?php echo $posJSON; ?>;
         const grns = <?php echo $grnsJSON; ?>;
-        const deliveries = <?php echo $deliveriesJSON; ?>;
+        // stock_clerk_db.deliveries is a leftover demo table that nothing in
+        // the ordering flow writes to - the Delivery tab reads real orders
+        // from api/get_orders.php instead (see loadMainOrders()). Kept only
+        // for the CSV export, which still targets that table.
+        const legacyDeliveries = <?php echo $deliveriesJSON; ?>;
         const rawMaterials = <?php echo $rawMaterialsJSON; ?>;
         let returnRecords = [
             {id: 'RET-001', product: 'Turmeric Powder', party: 'Saman Perera', date: '2026-03-15', quantity: '5 kg', reason: 'Damaged', status: 'Approved', type: 'customer'},
@@ -1484,41 +1506,160 @@ $rawMaterialsJSON = json_encode($rawMaterials);
             location.reload();
         }
 
-        // ==================== DELIVERY ====================
+        // ==================== ORDERS & DELIVERY ====================
+        // Both tables below are driven by the main application's orders table
+        // (api/get_orders.php), the same rows the customer, wholesaler,
+        // manager and account clerk see. The stock clerk's decision is posted
+        // to api/update_order_status.php, which enforces that the manager has
+        // approved the order first and moves it into delivery on approval.
+        let mainOrders = [];
+
+        function handleMainApiAuthFailure() {
+            if (window.__mainApiAuthWarned) return;
+            window.__mainApiAuthWarned = true;
+            showToast('⚠️ Your main-app session is not active. Please log in via the main login page to manage orders.', 'error');
+        }
+
+        async function loadMainOrders() {
+            try {
+                const r = await fetch('../../api/get_orders.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { handleMainApiAuthFailure(); mainOrders = []; return false; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_orders.php:', data.message); return false; }
+                mainOrders = data.orders || [];
+                return true;
+            } catch (e) {
+                console.error('Failed to load orders:', e);
+                return false;
+            }
+        }
+
+        function orderItemsText(o) {
+            if (!o.items || !o.items.length) return 'No items';
+            return o.items.map(i => `${i.product_name} (${Number(i.quantity)} kg)`).join(', ');
+        }
+
+        function orderQty(o) {
+            return (o.items || []).reduce((s, i) => s + Number(i.quantity), 0);
+        }
+
+        function renderOrderApprovals() {
+            const body = document.getElementById('order-approval-body');
+            if (!body) return;
+
+            const waiting = mainOrders.filter(o =>
+                o.manager_approval === 'approved' && o.stock_clerk_approval === 'pending');
+
+            body.innerHTML = waiting.map(o => `
+                <tr>
+                    <td><strong>${o.order_code}</strong></td>
+                    <td>${o.party_name}</td>
+                    <td>${o.order_type === 'wholesaler' ? 'Wholesaler' : 'Customer'}</td>
+                    <td>${orderItemsText(o)}</td>
+                    <td>${orderQty(o)} kg</td>
+                    <td>Rs. ${Number(o.total_amount).toLocaleString()}</td>
+                    <td>${(o.order_date || '').split(' ')[0]}</td>
+                    <td>
+                        <button class="btn-primary btn-sm" onclick="approveOrderForDelivery(${o.order_id}, '${o.order_code}')">✅ Approve</button>
+                        <button class="btn-secondary btn-sm" onclick="rejectOrderForDelivery(${o.order_id}, '${o.order_code}')">❌ Reject</button>
+                    </td>
+                </tr>
+            `).join('') || '<tr><td colspan="8">No orders are waiting for stock approval</td></tr>';
+        }
+
+        async function postOrderStage(orderId, fields) {
+            try {
+                const r = await fetch('../../api/update_order_status.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(Object.assign({ order_id: orderId }, fields))
+                });
+                if (r.status === 401 || r.status === 403) { handleMainApiAuthFailure(); return null; }
+                const data = await r.json();
+                if (!data.success) { showToast('❌ ' + (data.message || 'Update failed'), 'error'); return null; }
+                return data;
+            } catch (e) {
+                showToast('❌ Could not reach the server: ' + e.message, 'error');
+                return null;
+            }
+        }
+
+        async function approveOrderForDelivery(orderId, orderCode) {
+            if (!confirm(`Approve order ${orderCode} for delivery?\n\nThis moves it into processing and notifies the buyer.`)) return;
+            if (!(await postOrderStage(orderId, { stock_clerk_approval: 'approved' }))) return;
+
+            showToast(`✅ Order ${orderCode} released for delivery`, 'success');
+            await refreshOrderTabs();
+        }
+
+        async function rejectOrderForDelivery(orderId, orderCode) {
+            const reason = prompt(`Reject order ${orderCode}?\n\nReason (e.g. stock unavailable):`, '');
+            if (reason === null) return;
+            if (!reason.trim()) { showToast('❌ A reason is required', 'error'); return; }
+
+            if (!(await postOrderStage(orderId, { stock_clerk_approval: 'rejected', rejection_reason: reason.trim() }))) return;
+
+            showToast(`❌ Order ${orderCode} rejected - stock returned`, 'error');
+            await refreshOrderTabs();
+        }
+
         function loadDeliveryStatus() {
-            const pending = deliveries.filter(d => d.status === 'Pending').length;
-            const shipped = deliveries.filter(d => d.status === 'Shipped').length;
-            const delivered = deliveries.filter(d => d.status === 'Delivered').length;
+            // Only orders the stock clerk has released actually have a delivery.
+            const deliveries = mainOrders.filter(o => o.stock_clerk_approval === 'approved');
+
+            const pending = deliveries.filter(d => d.delivery_status === 'processing').length;
+            const shipped = deliveries.filter(d => d.delivery_status === 'shipped').length;
+            const delivered = deliveries.filter(d => d.delivery_status === 'delivered').length;
 
             document.getElementById('delivery-status-summary').innerHTML = `
-                <div class="delivery-status-card"><h3>PENDING</h3><p>${pending}</p></div>
+                <div class="delivery-status-card"><h3>PROCESSING</h3><p>${pending}</p></div>
                 <div class="delivery-status-card"><h3>SHIPPED</h3><p>${shipped}</p></div>
                 <div class="delivery-status-card"><h3>DELIVERED</h3><p>${delivered}</p></div>
             `;
 
-            let html = '';
-            deliveries.forEach((d, idx) => {
-                const statusClass = d.status === 'Pending' ? 'pending' : (d.status === 'Shipped' ? 'shipped' : 'delivered');
-                html += `<tr>
-                    <td>${d.id}</td><td>${d.product}</td><td>${d.quantity} kg</td>
-                    <td>${d.order_date}</td><td>${d.expected_date}</td>
-                    <td><select class="status-select ${statusClass}" onchange="updateDeliveryStatus('${d.id}', this.value)">
-                        <option value="Pending" ${d.status === 'Pending' ? 'selected' : ''}>Pending</option>
-                        <option value="Shipped" ${d.status === 'Shipped' ? 'selected' : ''}>Shipped</option>
-                        <option value="Delivered" ${d.status === 'Delivered' ? 'selected' : ''}>Delivered</option>
+            const html = deliveries.map(d => {
+                const status = d.delivery_status;
+                const statusClass = status === 'delivered' ? 'delivered' : status === 'shipped' ? 'shipped' : 'pending';
+                const locked = status === 'delivered' || status === 'cancelled';
+                return `<tr>
+                    <td><strong>${d.order_code}</strong></td>
+                    <td>${d.party_name}</td>
+                    <td>${orderItemsText(d)}</td>
+                    <td>${orderQty(d)} kg</td>
+                    <td>${(d.order_date || '').split(' ')[0]}</td>
+                    <td>${d.delivery_date || '-'}</td>
+                    <td><select class="status-select ${statusClass}" ${locked ? 'disabled' : ''}
+                            onchange="updateDeliveryStatus(${d.order_id}, '${d.order_code}', this.value)">
+                        <option value="processing" ${status === 'processing' ? 'selected' : ''}>Processing</option>
+                        <option value="shipped" ${status === 'shipped' ? 'selected' : ''}>Shipped</option>
+                        <option value="delivered" ${status === 'delivered' ? 'selected' : ''}>Delivered</option>
+                        ${status === 'cancelled' ? '<option value="cancelled" selected>Cancelled</option>' : ''}
                     </select></td>
-                    <td><button class="btn-secondary btn-sm" onclick="updateDeliveryStatus('${d.id}', document.querySelector('#tab-delivery .status-select').value)">Update</button></td>
+                    <td>${d.payment_status}</td>
                 </tr>`;
-            });
-            document.getElementById('delivery-status-body').innerHTML = html || '<tr><td colspan="7">No delivery data</td></tr>';
+            }).join('');
+
+            document.getElementById('delivery-status-body').innerHTML = html ||
+                '<tr><td colspan="8">No orders have been released for delivery yet</td></tr>';
         }
 
-        async function updateDeliveryStatus(id, status) {
-            const result = await apiCall('update_delivery', { id, status });
-            if (result.success) {
-                showToast('✅ Delivery status updated!', 'success');
-                location.reload();
+        async function updateDeliveryStatus(orderId, orderCode, status) {
+            if (!(await postOrderStage(orderId, { delivery_status: status }))) {
+                await refreshOrderTabs();   // put the dropdown back where it was
+                return;
             }
+
+            showToast(status === 'delivered'
+                ? `📦 Order ${orderCode} marked delivered - the buyer and account clerk have been notified`
+                : `✅ Order ${orderCode} is now ${status}`, 'success');
+            await refreshOrderTabs();
+        }
+
+        async function refreshOrderTabs() {
+            await loadMainOrders();
+            renderOrderApprovals();
+            loadDeliveryStatus();
         }
 
         // ==================== FAST/SLOW ANALYSIS ====================
@@ -1889,7 +2030,7 @@ $rawMaterialsJSON = json_encode($rawMaterials);
             const menuItems = document.querySelectorAll('.sidebar-menu a');
             if (menuItems[menuMap[tabName]]) menuItems[menuMap[tabName]].classList.add('active');
 
-            if (tabName === 'delivery') loadDeliveryStatus();
+            if (tabName === 'delivery') refreshOrderTabs();
             if (tabName === 'supplier-flow') loadSampleFlowData();
             if (tabName === 'suppliers') loadActiveSuppliers();
             if (tabName === 'overview') {
@@ -1908,7 +2049,7 @@ $rawMaterialsJSON = json_encode($rawMaterials);
             loadLowStockTable();
             loadCriticalAlerts();
             loadReorderList();
-            loadDeliveryStatus();
+            refreshOrderTabs();
             loadReturnReport();
             loadRawMaterials();
             loadActiveSuppliers();

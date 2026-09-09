@@ -65,10 +65,15 @@ endpoint_guard(function (): void {
     $total = max(0, $subtotal + $shipping + $tax - $discount);
     $orderCode = generate_code('ORD');
 
+    // Cash on delivery is only ever settled by the account clerk once the
+    // order is actually delivered, so it starts 'pending' either way - the
+    // method is recorded so every dashboard shows how it will be paid.
+    $paymentMethod = trim((string)($input['payment_method'] ?? '')) ?: null;
+
     $stmt = $pdo->prepare('
         INSERT INTO orders
-            (order_code, customer_id, wholesaler_id, order_type, delivery_date, delivery_region, shipping_amount, subtotal, discount_amount, tax_amount, total_amount, notes, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (order_code, customer_id, wholesaler_id, order_type, delivery_date, delivery_region, shipping_amount, subtotal, discount_amount, tax_amount, total_amount, payment_method, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ');
     $stmt->execute([
         $orderCode,
@@ -82,6 +87,7 @@ endpoint_guard(function (): void {
         $discount,
         $tax,
         $total,
+        $paymentMethod,
         $input['notes'] ?? null,
         $user['user_id'],
     ]);
@@ -99,6 +105,21 @@ endpoint_guard(function (): void {
         $insertItem->execute([$orderId, $product['product_id'], $product['name'], $qty, $unitPrice, $lineTotal]);
         $updateStock->execute([$qty, $product['product_id']]);
         $movement->execute([$product['product_id'], $qty, $product['current_stock'], $newStock, $orderId, $user['user_id']]);
+    }
+
+    // Tell the manager there is something to approve. Without this the order
+    // only existed in the buyer's own dashboard and nobody upstream ever
+    // learned about it.
+    $placedBy = $user['role'] === 'wholesaler' ? 'Wholesaler' : 'Customer';
+    $managers = $pdo->query('SELECT user_id, role FROM users WHERE role IN ("manager", "admin") AND status = "active"')->fetchAll();
+    foreach ($managers as $manager) {
+        create_notification(
+            (int)$manager['user_id'],
+            $manager['role'],
+            'info',
+            'New order awaiting approval',
+            "{$placedBy} order {$orderCode} (Rs. " . number_format($total, 2) . ') is waiting for your approval.'
+        );
     }
 
     $pdo->commit();

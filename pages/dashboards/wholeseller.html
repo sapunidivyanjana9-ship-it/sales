@@ -976,27 +976,134 @@
     </div>
 
     <script>
-        // PRODUCT DATA
-        const products = [
-            { id: 1, name: 'Ceylon Cinnamon', wholesalePricePerKg: 950, image: 'image/cinnomon.jpeg', minWholesale: 50, isEnabled: true },
-            { id: 2, name: 'Black Pepper', wholesalePricePerKg: 780, image: 'image/pepper.jpeg', minWholesale: 60, isEnabled: true },
-            { id: 3, name: 'Red Chili (dried)', wholesalePricePerKg: 620, image: 'image/Chili.jpeg', minWholesale: 50, isEnabled: false },
-            { id: 4, name: 'Turmeric Powder', wholesalePricePerKg: 540, image: 'image/Turmeric.jpeg', minWholesale: 100, isEnabled: true },
-            { id: 5, name: 'Curry Leaves Powder', wholesalePricePerKg: 430, image: 'image/currypowder.jpeg', minWholesale: 90, isEnabled: false },
-            { id: 6, name: 'Cardamom', wholesalePricePerKg: 2800, image: 'image/cardamom.jpeg', minWholesale: 25, isEnabled: true }
-        ];
-
-        const featuredProducts = products.filter(p => p.isEnabled).slice(0, 3);
+        // ============================================================
+        // SERVER-BACKED DATA
+        // Products, orders and order statuses all come from the PHP backend.
+        // This page used to keep its own catalogue and its own copy of every
+        // order in localStorage, and "notified" the manager by writing to a
+        // localStorage key the manager's browser could never see - which is
+        // why a wholesaler order never reached the manager's dashboard.
+        // ============================================================
+        let products = [];
+        let featuredProducts = [];
         let cart = JSON.parse(localStorage.getItem('wholesaleCart')) || [];
-        let orders = JSON.parse(localStorage.getItem('wholesalerOrders')) || [];
+        let orders = [];   // view-model rows derived from the server's orders
 
-        function generateOrderId() {
-            const date = new Date();
-            const year = date.getFullYear().toString().slice(-2);
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const random = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
-            return `ORD-${year}${month}${day}-${random}`;
+        // Wholesale minimums are per-product business rules the catalogue
+        // doesn't carry a column for; fall back to a sane default.
+        const DEFAULT_MIN_WHOLESALE = 25;
+
+        function productImageFor(name) {
+            const key = (name || '').toLowerCase();
+            if (key.includes('cinnamon')) return 'image/cinnomon.jpeg';
+            if (key.includes('pepper')) return 'image/pepper.jpeg';
+            if (key.includes('chili')) return 'image/Chili.jpeg';
+            if (key.includes('turmeric')) return 'image/Turmeric.jpeg';
+            if (key.includes('curry')) return 'image/currypowder.jpeg';
+            if (key.includes('cardamom')) return 'image/cardamom.jpeg';
+            return 'image/spice.jpeg';
+        }
+
+        async function loadProductsFromServer() {
+            try {
+                const r = await fetch('../../api/get_products.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { redirectToLogin(); return; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_products.php:', data.message); return; }
+
+                products = (data.products || []).map(p => {
+                    const stock = Number(p.current_stock);
+                    const minOrder = Math.max(Number(p.min_order_qty) || 0, DEFAULT_MIN_WHOLESALE);
+                    return {
+                        id: Number(p.product_id),
+                        name: p.name,
+                        wholesalePricePerKg: Number(p.wholesale_price !== null ? p.wholesale_price : p.price),
+                        image: p.image_path || productImageFor(p.name),
+                        minWholesale: minOrder,
+                        stock: stock,
+                        // Anything the warehouse can't cover at the wholesale
+                        // minimum is shown, but not orderable - create_order.php
+                        // would reject it anyway.
+                        isEnabled: p.status === 'active' && stock >= minOrder
+                    };
+                });
+                featuredProducts = products.filter(p => p.isEnabled).slice(0, 3);
+
+                renderProductGrid('featuredProductsGrid', featuredProducts, false);
+                renderProductGrid('allProductsGrid', products, true);
+            } catch (e) {
+                console.error('Failed to load products:', e);
+            }
+        }
+
+        // Maps a server order row onto the shape this page's tables render.
+        function toWholesalerOrder(o) {
+            let status = 'Pending';
+            if (o.manager_approval === 'rejected' || o.stock_clerk_approval === 'rejected') status = 'Rejected';
+            else if (o.delivery_status === 'delivered') status = 'Delivered';
+            else if (o.manager_approval === 'approved' && o.stock_clerk_approval === 'approved') status = 'Processing';
+            else if (o.manager_approval === 'approved') status = 'Approved';
+
+            return {
+                orderId: Number(o.order_id),
+                id: o.order_code,
+                date: (o.order_date || '').split(' ')[0],
+                items: (o.items || []).map(i => ({
+                    name: i.product_name,
+                    quantity: Number(i.quantity),
+                    pricePerKg: Number(i.unit_price),
+                    total: Number(i.line_total)
+                })),
+                subtotal: Number(o.subtotal),
+                delivery: Number(o.shipping_amount || 0),
+                deliveryRegion: o.delivery_region || 'Standard Delivery',
+                total: Number(o.total_amount),
+                status: status,
+                deliveryStatus: o.delivery_status,
+                paymentStatus: o.payment_status,
+                reason: o.rejection_reason || ''
+            };
+        }
+
+        async function loadOrdersFromServer() {
+            try {
+                const r = await fetch('../../api/get_orders.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { redirectToLogin(); return false; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_orders.php:', data.message); return false; }
+                orders = (data.orders || []).map(toWholesalerOrder);
+                return true;
+            } catch (e) {
+                console.error('Failed to load orders:', e);
+                return false;
+            }
+        }
+
+        // A non-blocking banner, not alert() - this fires from a background
+        // poll as well as from user actions, and a modal dialog on a timer
+        // interrupts whatever the user was typing (and blocks the page
+        // entirely in an automated/embedded browser). Mirrors the manager
+        // dashboard's handleAuthFailure().
+        function showSessionExpiredBanner(message) {
+            try {
+                localStorage.removeItem('user_session');
+                localStorage.removeItem('supplier_session');
+            } catch (e) { /* ignore */ }
+
+            const banner = document.createElement('div');
+            banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+                'background:#c0392b;color:#fff;padding:14px 20px;text-align:center;' +
+                'font:600 15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;' +
+                'box-shadow:0 2px 10px rgba(0,0,0,.3);';
+            banner.textContent = message;
+            document.body.prepend(banner);
+            setTimeout(() => { window.location.href = '../auth/login.html'; }, 2200);
+        }
+
+        function redirectToLogin() {
+            if (window.__wholesalerAuthWarned) return;
+            window.__wholesalerAuthWarned = true;
+            showSessionExpiredBanner('⚠️ Your session has expired or you are not logged in as a wholesaler. Redirecting to login…');
         }
 
         function getDeliveryFee(regionValue = null) {
@@ -1086,99 +1193,74 @@
             document.getElementById('cartSidebar').classList.remove('open'); 
         }
 
-        // Checkout - Save order with PENDING status
-        function checkoutWithDelivery() {
-            if (cart.length === 0) { 
-                alert('Cart is empty! Add products first.'); 
-                return; 
+        // Checkout - creates the order on the server, where it lands in the
+        // manager's approval queue. The old version only pushed it into
+        // localStorage keys ('wholesalerOrders', 'managerOrders',
+        // 'managerNotifications') that nobody else's browser ever reads.
+        async function checkoutWithDelivery() {
+            if (cart.length === 0) {
+                alert('Cart is empty! Add products first.');
+                return;
             }
 
             const { subtotal, delivery, totalWithDelivery } = calculateCartTotals();
             const regionSelect = document.getElementById('deliveryRegion');
             const regionText = regionSelect.options[regionSelect.selectedIndex]?.text || 'Standard Delivery';
-            
-            const order = {
-                id: generateOrderId(),
-                date: new Date().toISOString().split('T')[0],
-                items: cart.map(item => ({
-                    name: item.name,
-                    quantity: item.quantity,
-                    pricePerKg: item.pricePerKg,
-                    total: item.quantity * item.pricePerKg
-                })),
-                subtotal: subtotal,
-                delivery: delivery,
-                deliveryRegion: regionText,
-                total: totalWithDelivery,
-                status: 'Pending', // Initial status - waiting for manager approval
-                type: 'Wholesaler',
-                timeline: [
-                    { step: 'Order Placed', date: new Date().toISOString(), status: 'completed' },
-                    { step: 'Manager Approval', date: null, status: 'pending' },
-                    { step: 'Delivery/Stock Processing', date: null, status: 'pending' },
-                    { step: 'Delivered', date: null, status: 'pending' }
-                ]
-            };
 
-            orders.push(order);
-            localStorage.setItem('wholesalerOrders', JSON.stringify(orders));
+            const checkoutBtn = document.querySelector('.checkout-btn');
+            if (checkoutBtn) { checkoutBtn.disabled = true; checkoutBtn.innerText = '⏳ Placing order...'; }
 
-            // Also save to manager orders for approval
-            let managerOrders = JSON.parse(localStorage.getItem('managerOrders')) || [];
-            managerOrders.push({
-                ...order,
-                wholesalerName: 'Saman Perera',
-                wholesalerEmail: 'saman@example.com'
-            });
-            localStorage.setItem('managerOrders', JSON.stringify(managerOrders));
-
-            // Send notification to manager
-            let notifications = JSON.parse(localStorage.getItem('managerNotifications')) || [];
-            notifications.push({
-                orderId: order.id,
-                message: `New wholesaler order ${order.id} from Saman Perera - Total: Rs. ${totalWithDelivery.toLocaleString()}`,
-                date: new Date().toISOString(),
-                read: false,
-                type: 'wholesaler_order'
-            });
-            localStorage.setItem('managerNotifications', JSON.stringify(notifications));
-
-            // Clear cart
-            cart = [];
-            updateCartDisplayAndDelivery();
-            closeCart();
-
-            alert(`✅ Order placed successfully!\n\nOrder ID: ${order.id}\nTotal: Rs. ${totalWithDelivery.toLocaleString()}\nDelivery: ${regionText}\n\n⏳ Waiting for Manager Approval. You will be notified once approved.`);
-
-            navigateTo('orders');
-            updateDashboardStats();
-        }
-
-        // Listen for status updates from manager (via localStorage)
-        function checkForOrderUpdates() {
-            const updatedOrders = JSON.parse(localStorage.getItem('wholesalerOrders')) || [];
-            if (updatedOrders.length !== orders.length) {
-                orders = updatedOrders;
-                renderWholesalerOrders();
-                updateDashboardStats();
-            } else {
-                // Check if any status changed
-                let changed = false;
-                updatedOrders.forEach((newOrder, index) => {
-                    if (orders[index] && newOrder.status !== orders[index].status) {
-                        changed = true;
-                    }
+            try {
+                const r = await fetch('../../api/create_order.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        order_type: 'wholesaler',
+                        items: cart.map(i => ({ product_id: i.productId, quantity: i.quantity })),
+                        shipping_amount: delivery,
+                        delivery_region: regionText,
+                        payment_method: 'Credit / Invoice'
+                    })
                 });
-                if (changed) {
-                    orders = updatedOrders;
-                    renderWholesalerOrders();
-                    updateDashboardStats();
+
+                if (r.status === 401 || r.status === 403) { redirectToLogin(); return; }
+                const data = await r.json();
+                if (!data.success) {
+                    alert('❌ Could not place the order.\n\n' + (data.message || 'Please try again.'));
+                    return;
                 }
+
+                cart = [];
+                updateCartDisplayAndDelivery();
+                closeCart();
+
+                alert(`✅ Order placed successfully!\n\nOrder ID: ${data.order_code}\nTotal: Rs. ${totalWithDelivery.toLocaleString()}\nDelivery: ${regionText}\n\n⏳ Waiting for Manager Approval. You will be notified once approved.`);
+
+                await Promise.all([loadOrdersFromServer(), loadProductsFromServer()]);
+                navigateTo('orders');
+                updateDashboardStats();
+                renderWholesalerOrders();
+            } catch (e) {
+                alert('❌ Could not reach the server: ' + e.message);
+            } finally {
+                if (checkoutBtn) { checkoutBtn.disabled = false; checkoutBtn.innerText = '📦 Proceed to Checkout'; }
             }
         }
 
-        // Check for updates every 5 seconds
-        setInterval(checkForOrderUpdates, 5000);
+        // Poll the server for manager / stock clerk decisions.
+        async function checkForOrderUpdates() {
+            const before = JSON.stringify(orders.map(o => [o.id, o.status, o.deliveryStatus, o.paymentStatus]));
+            if (!(await loadOrdersFromServer())) return;
+            const after = JSON.stringify(orders.map(o => [o.id, o.status, o.deliveryStatus, o.paymentStatus]));
+            if (before !== after) {
+                renderWholesalerOrders();
+                updateDashboardStats();
+            }
+        }
+
+        // Check for updates every 8 seconds
+        setInterval(checkForOrderUpdates, 8000);
 
         function renderProductGrid(containerId, productList, showFullControls = true) {
             let html = '';
@@ -1266,10 +1348,11 @@
         }
 
         function updateDashboardStats() {
+            const live = orders.filter(o => o.status !== 'Rejected');
             const totalOrders = orders.length;
             const pendingOrders = orders.filter(o => o.status === 'Pending').length;
-            const approvedOrders = orders.filter(o => o.status === 'Approved' || o.status === 'Delivered').length;
-            const totalSpent = orders.filter(o => o.status === 'Approved' || o.status === 'Delivered')
+            const approvedOrders = live.filter(o => o.status !== 'Pending').length;
+            const totalSpent = live.filter(o => o.status !== 'Pending')
                 .reduce((sum, order) => sum + order.total, 0);
             
             document.getElementById('totalOrders').innerText = totalOrders;
@@ -1286,9 +1369,9 @@
             } else {
                 const sortedOrders = [...orders].reverse();
                 sortedOrders.forEach(o => {
-                    const statusClass = o.status.toLowerCase() === 'pending' ? 'pending' : 
-                                       o.status.toLowerCase() === 'approved' ? 'approved' :
-                                       o.status.toLowerCase() === 'delivered' ? 'delivered' : 'rejected';
+                    const statusClass = o.status === 'Pending' ? 'pending' :
+                                       (o.status === 'Approved' || o.status === 'Processing') ? 'approved' :
+                                       o.status === 'Delivered' ? 'delivered' : 'rejected';
                     
                     const itemsSummary = o.items.map(item => `${item.name} (${item.quantity} kg)`).join(', ');
                     const totalQuantity = o.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -1299,6 +1382,7 @@
                     const statusMap = {
                         'Pending': ['Order Placed'],
                         'Approved': ['Order Placed', 'Manager Approval'],
+                        'Processing': ['Order Placed', 'Manager Approval', 'Stock Processing'],
                         'Delivered': ['Order Placed', 'Manager Approval', 'Stock Processing', 'Delivered'],
                         'Rejected': ['Order Placed']
                     };
@@ -1332,31 +1416,36 @@
             renderUserMessages();
         }
 
-        function renderUserMessages() {
+        // Real notifications for this account (api/get_notifications.php) -
+        // written server-side whenever the manager, stock clerk or account
+        // clerk moves one of this wholesaler's orders along.
+        async function renderUserMessages() {
+            const el = document.getElementById('userMessagesArea');
+            if (!el) return;
+
             try {
-                let messages = JSON.parse(localStorage.getItem('userMessages')) || [];
-                let html = '';
-                const orderMessages = messages.filter(m => m.recipientType === 'Wholesaler');
-                
-                if (orderMessages.length > 0) {
-                    orderMessages.reverse().forEach(m => {
-                        const bgColor = m.type === 'approved' ? '#d4edda' : 
-                                       m.type === 'rejected' ? '#f8d7da' : '#fff3cd';
-                        const borderColor = m.type === 'approved' ? 'var(--success)' : 
-                                           m.type === 'rejected' ? 'var(--danger)' : 'var(--warning)';
-                        html += `<div style="background:${bgColor};padding:10px;border-radius:8px;margin-bottom:8px;border-left:4px solid ${borderColor};">
-                            <strong>${m.date} — ${m.orderId}</strong>
-                            <div style="margin-top:6px;color:#333;">${m.message}</div>
-                        </div>`;
-                    });
-                } else {
-                    html = '<div style="color:#666;padding:10px;">No messages</div>';
+                const r = await fetch('../../api/get_notifications.php', { credentials: 'same-origin' });
+                if (r.status === 401 || r.status === 403) { redirectToLogin(); return; }
+                const data = await r.json();
+                if (!data.success) { console.error('get_notifications.php:', data.message); return; }
+
+                const messages = data.notifications || [];
+                if (!messages.length) {
+                    el.innerHTML = '<div style="color:#666;padding:10px;">No messages</div>';
+                    return;
                 }
-                
-                const el = document.getElementById('userMessagesArea');
-                if(el) el.innerHTML = html;
-            } catch(e) { 
-                console.error('Failed to load user messages', e); 
+
+                el.innerHTML = messages.map(m => {
+                    const bgColor = m.type === 'success' ? '#d4edda' : m.type === 'error' ? '#f8d7da' : '#fff3cd';
+                    const borderColor = m.type === 'success' ? 'var(--success)' : m.type === 'error' ? 'var(--danger)' : 'var(--warning)';
+                    const when = (m.created_at || '').split(' ')[0];
+                    return `<div style="background:${bgColor};padding:10px;border-radius:8px;margin-bottom:8px;border-left:4px solid ${borderColor};">
+                        <strong>${when} — ${m.title}</strong>
+                        <div style="margin-top:6px;color:#333;">${m.message}</div>
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load user messages', e);
             }
         }
 
@@ -1369,15 +1458,19 @@
                 } catch (e) {
                     console.error('Failed to clear session storage:', e);
                 }
-                window.location.href = '../auth/login.html';
+                // Destroy the real PHP session as well - clearing localStorage
+                // alone leaves the server session (the thing every api/*.php
+                // call checks) fully authenticated.
+                fetch('../../logout.php', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+                    .finally(() => { window.location.href = '../auth/login.html'; });
             }
         }
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            renderProductGrid('featuredProductsGrid', featuredProducts, false);
-            renderProductGrid('allProductsGrid', products, true);
+        document.addEventListener('DOMContentLoaded', async () => {
             updateCartDisplayAndDelivery();
+
+            await Promise.all([loadProductsFromServer(), loadOrdersFromServer()]);
             updateDashboardStats();
             renderWholesalerOrders();
             
